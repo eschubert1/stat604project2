@@ -1,0 +1,72 @@
+---
+title: "STATS 604 Project 2 EDA"
+author: "Ethan Schubert"
+date: "2025-09-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load the data
+load("../data/brain.rda")
+
+summary(arraymeta)
+head(arraymeta)
+dim(expression)
+expression[1:5,1:5]
+dim(genemeta)
+genemeta[,1:5]
+```
+
+```{r}
+# Number of patients
+length(unique(arraymeta$patient))
+
+# Relative frequency of regions and labs
+colMeans(arraymeta[2:7])
+
+# Histogram of ages (by observation)
+hist(arraymeta$age, main="Distribution of observation ages")
+
+patients = unique(arraymeta[,c("patient", "age")])
+hist(patients$age, main="Distribution of patient ages")
+
+# Relative frequency of each array version
+v2_prop = mean(arraymeta$arrayversion-1)
+c((1-v2_prop), v2_prop)
+
+# Frequencies of region by array version
+freq_table = matrix(nrow=2, ncol=3)
+rownames(freq_table) = c("version 1", "version 2")
+colnames(freq_table) = colnames(arraymeta)[2:4]
+for(i in 1:2) {
+  ix = which(arraymeta$arrayversion == i)
+  freq_table[i,] = colSums(arraymeta[ix, 2:4])
+}
+freq_table
+
+# Frequencies of lab by array version
+freq_table = matrix(nrow=2, ncol=3)
+rownames(freq_table) = c("version 1", "version 2")
+colnames(freq_table) = colnames(arraymeta)[5:7]
+for(i in 1:2) {
+  ix = which(arraymeta$arrayversion == i)
+  freq_table[i,] = colSums(arraymeta[ix, 5:7])
+}
+freq_table
+
+# Frequencies of region by lab
+freq_table = matrix(nrow=3, ncol=3)
+rownames(freq_table) = colnames(arraymeta)[2:4]
+colnames(freq_table) = colnames(arraymeta)[5:7]
+for(i in 2:4) {
+  ix = which(arraymeta[,i] == 1)
+  freq_table[i-1,] = colSums(arraymeta[ix, 5:7])
+}
+freq_table
+
+```
+
