@@ -4,7 +4,4 @@
 .Rhistory
 .Rproj.user/
 
-# 数据/输出（按需保留或删除）
-data/
-outputs/
-results/
+
