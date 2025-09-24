@@ -1,0 +1,523 @@
+---
+title: "Aging Brain — Matching-based Differential Expression (≥70 vs <70)"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+params:
+  data_path: "data/brain.rda"   # 也可设为 "brain.rda"
+  do_combat: false              # 是否做 ComBat 批次校正
+  n_top: 20                     # 选取的“潜在”基因个数
+  caliper: 0.2                  # 匹配 caliper（PS 的 logit 标准差单位）
+---
+```{r}
+set.seed(20240924)
+options(stringsAsFactors = FALSE)
+
+# 安装/加载包
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+pacman::p_load(
+  tidyverse, MatchIt, cobalt, broom, matrixStats, ggrepel,
+  pheatmap, patchwork, knitr, kableExtra
+)
+# 可选批次校正
+if (isTRUE(params$do_combat)) {
+  if (!requireNamespace("sva", quietly = TRUE)) {
+    if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+    BiocManager::install("sva", ask = FALSE, update = FALSE)
+  }
+  library(sva)
+}
+
+# 读取数据：优先参数路径，其次 data/brain.rda，再次项目根目录
+load("../data/brain.rda")
+
+dim(expression); dim(arraymeta)
+```
+data preparation, combine technical repetition
+```{r}
+meta_raw <- as_tibble(arraymeta) %>%
+  mutate(row_id = row_number(),
+         region = case_when(
+           region.ancg == 1 ~ "ANCg",
+           region.cb   == 1 ~ "CB",
+           region.dlpfc== 1 ~ "DLPFC",
+           TRUE ~ NA_character_
+         ),
+         lab = case_when(
+           lab.davis    == 1 ~ "Davis",
+           lab.irvine   == 1 ~ "Irvine",
+           lab.michigan == 1 ~ "Michigan",
+           TRUE ~ NA_character_
+         ),
+         age70   = if_else(age >= 70, 1L, 0L),
+         age_grp = if_else(age >= 70, ">=70", "<70"))
+
+# 组合键：病人×脑区×实验室×芯片版本
+meta_raw <- meta_raw %>%
+  mutate(cluster_id = paste(patient, region, lab, arrayversion, sep = "_"))
+
+# 表达矩阵与元信息行对齐
+stopifnot(nrow(meta_raw) == nrow(expression))
+rownames(expression) <- meta_raw$cluster_id
+
+# 先对同一（病人×脑区×实验室×版本）的重复技术测量取列中位数，避免重复样本多次进入匹配
+idx_by_cluster <- split(seq_len(nrow(expression)), meta_raw$cluster_id)
+expr_collapsed <- do.call(
+  rbind,
+  lapply(idx_by_cluster, function(ix) matrixStats::colMedians(expression[ix, , drop = FALSE]))
+)
+cluster_ids <- names(idx_by_cluster)
+rownames(expr_collapsed) <- cluster_ids
+
+meta_collapsed <- meta_raw %>%
+  group_by(cluster_id) %>%
+  summarise(
+    patient = first(patient),
+    region  = first(region),
+    lab     = first(lab),
+    arrayversion = first(arrayversion),
+    age     = first(age),
+    sex     = first(sex),
+    age70   = first(age70),
+    age_grp = first(age_grp),
+    n_reps  = n(),
+    .groups = "drop"
+  ) %>%
+  filter(cluster_id %in% cluster_ids) %>%
+  arrange(match(cluster_id, cluster_ids))
+stopifnot(identical(meta_collapsed$cluster_id, rownames(expr_collapsed)))
+
+probe_ids <- colnames(expr_collapsed)
+
+# 对齐基因注释和表达矩阵
+common_ids <- intersect(probe_ids, colnames(genemeta))
+
+expr_use   <- expr_collapsed[, common_ids, drop = FALSE]
+chrom_vec  <- genemeta["chrom", common_ids]
+sym_vec    <- genemeta["sym", common_ids]
+
+
+is_control <- grepl("^AFFX", common_ids, ignore.case = TRUE) | is.na(sym_vec)
+
+expr_use <- expr_use[, !is_control, drop = FALSE]
+
+gene_anno <- tibble(
+  probe_id    = colnames(expr_use),
+  gene_symbol = sym_vec[!is_control],
+  chrom       = chrom_vec[!is_control]
+)
+cat("样本（合并后）行数：", nrow(expr_use), "；基因（探针）数：", ncol(expr_use), "\n")
+```
+matching and difference analysis
+```{r}
+run_matching_for_region <- function(region_name, expr_mat, meta_df, caliper = 0.2, ratio = 1) {
+  sel <- meta_df$region == region_name
+  dat <- meta_df[sel, , drop = FALSE]
+  if (!any(sel) || length(unique(dat$age70)) < 2 || min(table(dat$age70)) < 2) {
+    message("跳过 ", region_name, "：该脑区组别或样本太少。")
+    return(NULL)
+  }
+  expr_r <- expr_mat[sel, , drop = FALSE]
+
+  dat$sex          <- factor(dat$sex)
+  dat$lab          <- factor(dat$lab)
+  dat$arrayversion <- factor(dat$arrayversion)
+
+  # 保留 cluster_id 列（不要依赖 rownames）
+  m.out <- MatchIt::matchit(
+    age70 ~ sex + lab + arrayversion,
+    data     = dat,
+    method   = "nearest",
+    distance = "logit",
+    caliper  = caliper,
+    ratio    = ratio,
+    replace  = FALSE
+  )
+  md <- MatchIt::match.data(m.out)
+
+  # 用 cluster_id 作为 ID
+  matched_ids <- md$cluster_id
+  expr_m <- expr_r[matched_ids, , drop = FALSE]
+
+  # 按 subclass 分配配对
+  md$pair_id <- md$subclass
+  pairs <- split(md$cluster_id, md$pair_id)
+  pairs <- Filter(function(ids) length(unique(md$age70[md$cluster_id %in% ids])) == 2, pairs)
+
+  if (length(pairs) == 0) {
+    warning("未形成有效配对：", region_name)
+    return(list(region = region_name, m.out = m.out, md = md,
+                expr_m = expr_m, pair_mat = NULL, stats = NULL))
+  }
+
+  # 构建配对矩阵（直接用 cluster_id）
+  pair_mat <- do.call(rbind, lapply(pairs, function(ids){
+    i1 <- ids[md$age70[md$cluster_id %in% ids] == 1][1]
+    i0 <- ids[md$age70[md$cluster_id %in% ids] == 0][1]
+    c(treat = i1, control = i0)
+  }))
+
+  npairs <- nrow(pair_mat)
+
+  # calculate pair difference
+  diff_mat <- do.call(rbind, lapply(seq_len(npairs), function(j){
+    expr_m[pair_mat[j,"treat"], ] - expr_m[pair_mat[j,"control"], ]
+  }))
+
+  mean_diff <- colMeans(diff_mat)
+  sd_diff   <- apply(diff_mat, 2, sd)
+  sd_diff[sd_diff == 0] <- NA_real_
+  tstat <- mean_diff / (sd_diff / sqrt(npairs))
+  pval  <- 2 * pt(-abs(tstat), df = max(npairs - 1, 1))
+
+  res <- tibble(
+    probe_id  = colnames(expr_m),
+    mean_diff = as.numeric(mean_diff),
+    t         = as.numeric(tstat),
+    p         = as.numeric(pval),
+    fdr       = p.adjust(pval, method = "BH"),
+    region    = region_name,
+    n_pairs   = npairs
+  )
+  list(region = region_name, m.out = m.out, md = md,
+       expr_m = expr_m, pair_mat = pair_mat, stats = res)
+}
+
+regions <- c("ANCg", "CB", "DLPFC")
+fits <- lapply(regions, run_matching_for_region,
+               expr_mat = expr_use, meta_df = meta_collapsed,
+               caliper = params$caliper)
+names(fits) <- regions
+
+res_all <- bind_rows(lapply(fits, function(x) x$stats)) %>%
+  left_join(gene_anno, by = c("probe_id" = "probe_id")) %>%
+  relocate(gene_symbol, .after = probe_id)
+
+# select a region for each gene based on the absolute difference (one gene needs only one region to specify)
+res_best_by_gene <- res_all %>%
+  group_by(probe_id) %>%
+  slice_max(order_by = abs(mean_diff), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+topN <- res_best_by_gene %>%
+  arrange(desc(abs(mean_diff))) %>%
+  slice(1:params$n_top) %>%
+  mutate(direction = if_else(mean_diff > 0, "Old Up (≥70 high)", "Old Down (≥70 low)"),
+         abs_effect = abs(mean_diff))
+
+# save to CSV
+readr::write_csv(topN, "top20_genes_by_region.csv")
+```
+Top-N potential list
+```{r}
+topN %>%
+  transmute(
+    rank = row_number(),
+    probe_id, gene_symbol, region, n_pairs,
+    mean_diff = round(mean_diff, 3),
+    abs_effect = round(abs_effect, 3),
+    p = signif(p, 3),
+    fdr = signif(fdr, 3),
+    direction
+  ) %>%
+  knitr::kable(align = "rllllrrrrl", caption = "Top 20 潜在差异基因（按 |old−young| 排序；最佳脑区为差异绝对值最大的脑区）") %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+```
+Visualizations
+```{r}
+# the covariante balance after matching
+plots <- purrr::imap(fits, function(fit, nm){
+  if (is.null(fit) || is.null(fit$m.out)) return(NULL)
+  cobalt::love.plot(
+    fit$m.out, stats = "mean.diffs", threshold = 0.1,
+    var.order = "unadjusted", abs = TRUE,
+    # stars = raw,
+    title = paste0("Balance: ", nm, " (|SMD|threshold =0.1)")
+  )
+})
+plots
+```
+
+```{r}
+# gene effect for each region
+plot_volcano <- function(df_region, title_txt) {
+  if (is.null(df_region) || nrow(df_region) == 0) return(NULL)
+  df_region <- df_region %>%
+    mutate(sig = fdr < 0.05,
+           label = if_else(rank(-abs(mean_diff)) <= 10,
+                           if_else(is.na(gene_symbol), probe_id, gene_symbol), ""))
+  ggplot(df_region, aes(x = mean_diff, y = -log10(p))) +
+    geom_point(alpha = 0.4) +
+    ggrepel::geom_text_repel(aes(label = label), max.overlaps = 20, size = 3) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+    labs(title = title_txt, x = "Old − Young（log expression）", y = "−log10(p)") +
+    theme_minimal()
+}
+
+p_v <- lapply(regions, function(rg) {
+  plot_volcano(res_all %>% filter(region == rg),
+               paste0("Volcano — ", rg))
+})
+patchwork::wrap_plots(p_v, ncol = 2)
+```
+
+```{r}
+plot_region_heatmap <- function(region_name, genes_tbl, fit) {
+  g_ids <- genes_tbl %>% filter(region == region_name) %>% pull(probe_id)
+  g_ids <- intersect(g_ids, colnames(fit$expr_m))
+  if (length(g_ids) == 0) return(NULL)
+  md <- fit$md
+  em <- fit$expr_m
+  ord <- order(md$age70, md$pair_id)  # 先按年龄组，再按配对
+  mat <- t(scale(em[ord, g_ids, drop = FALSE]))
+  ann <- data.frame(AgeGroup = md$age_grp[ord])
+  rownames(ann) <- rownames(em)[ord]
+  pheatmap::pheatmap(
+    mat, cluster_rows = TRUE, cluster_cols = TRUE,
+    show_colnames = FALSE, main = paste0("Heatmap — ", region_name, " Top genes, standarization within row"),
+    annotation_col = ann
+  )
+}
+
+hm_plots <- purrr::imap(fits, ~ plot_region_heatmap(.y, topN, .x))
+hm_plots
+```
+
+```{r}
+plot_gene_box <- function(probe_id, region_name, fits, gene_anno){
+  fit <- fits[[region_name]]
+  if (is.null(fit) || is.null(fit$expr_m) || !(probe_id %in% colnames(fit$expr_m))) return(NULL)
+  md <- fit$md
+  df <- md %>% mutate(expr = fit$expr_m[, probe_id])
+  gsym <- gene_anno$gene_symbol[match(probe_id, gene_anno$probe_id)]
+  ttl <- paste0(ifelse(is.na(gsym) | gsym == "", probe_id, gsym), " — ", region_name)
+  ggplot(df, aes(x = age_grp, y = expr)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.15, alpha = 0.5) +
+    labs(title = ttl, x = "age group", y = "log expression") +
+    theme_minimal()
+}
+
+# 选取总体 Top 6 做演示
+top6 <- head(topN, 6)
+bp <- purrr::pmap(list(top6$probe_id, top6$region, list(fits), list(gene_anno)),
+                  plot_gene_box)
+patchwork::wrap_plots(bp, ncol = 3)
+```
+pair plotting after matching
+```{r}
+library(tidyverse)
+library(pheatmap)
+
+# 把 "1","2",... 这样的行号字符串稳健地映射为该 region 子集里的 cluster_id
+.map_ids_to_cluster <- function(x, id_vec) {
+  # 如果本身就已经是 cluster_id（直接出现在 id_vec 里），直接返回
+  hit <- x %in% id_vec
+  out <- x
+  # 对于看起来是纯数字的名字，按行号映射到 id_vec
+  need_map <- !hit & grepl("^[0-9]+$", x)
+  out[need_map] <- id_vec[as.integer(x[need_map])]
+  out
+}
+
+# ——关键函数：基于 region 重建 pair 并对齐到 expr_use / meta_collapsed——
+extract_pairs_by_region <- function(fit, region_name, expr_mat, meta_df) {
+  stopifnot(!is.null(fit$m.out))
+  mm <- fit$m.out$match.matrix
+  if (is.null(mm)) stop("fit$m.out$match.matrix 不存在；匹配可能失败或当前方法不提供 match.matrix。")
+
+  # 用与匹配时一致的 region 子集顺序，构建“行号 → cluster_id”映射
+  dat_used <- meta_df %>% filter(region == region_name)
+  id_vec   <- dat_used$cluster_id
+
+  # 将 match.matrix 的行名（treat）与列值（control）映射成 cluster_id
+  treat_ids_raw <- rownames(mm)
+  control_ids_raw <- as.vector(t(mm))             # 先展平成向量，后面再成对组合
+  control_ids_raw <- control_ids_raw[!is.na(control_ids_raw)]
+
+  treat_ids_mapped   <- .map_ids_to_cluster(treat_ids_raw, id_vec)
+  control_ids_mapped <- .map_ids_to_cluster(control_ids_raw, id_vec)
+
+  # 逐行展开成 (treat, control) 对
+  pair_df <- imap_dfr(as.data.frame(mm), function(col, k) {
+    tibble(
+      treat_id   = treat_ids_mapped,
+      control_id = .map_ids_to_cluster(as.character(col), id_vec)
+    ) %>% filter(!is.na(control_id))
+  }) %>%
+    distinct()
+
+  if (nrow(pair_df) == 0) stop("没有形成任何有效的匹配对（pair_df 为空）。")
+
+  matched_ids <- unique(c(pair_df$treat_id, pair_df$control_id))
+  missing_in_expr <- setdiff(matched_ids, rownames(expr_mat))
+  if (length(missing_in_expr) > 0) {
+    stop("有匹配到的样本不在表达矩阵行名中：\n",
+         paste(head(missing_in_expr, 10), collapse = ", "),
+         if (length(missing_in_expr) > 10) sprintf(" ... 以及 %d 个", length(missing_in_expr)-10) else "")
+  }
+
+  # 表达矩阵与元信息子集
+  expr_m <- expr_mat[matched_ids, , drop = FALSE]
+  md <- meta_df %>%
+    filter(cluster_id %in% matched_ids) %>%
+    mutate(
+      age_grp = factor(age_grp, levels = c("<70", ">=70"))
+    )
+
+  # 为了在热图里成组展示：以 treat 的出现顺序生成 pair_block，并把该 treat 的所有 control 放在其前面
+  treat_order <- unique(pair_df$treat_id)
+  pair_df <- pair_df %>%
+    mutate(pair_block = match(treat_id, treat_order))
+
+  map_tbl <- bind_rows(
+    pair_df %>% transmute(cluster_id = treat_id,   pair_block) %>% distinct(),
+    pair_df %>% transmute(cluster_id = control_id, pair_block) %>% distinct()
+  ) %>% distinct()
+
+  md <- md %>% left_join(map_tbl, by = "cluster_id")
+
+  # 样本显示顺序：对每个 treat，把它的所有 control 紧挨着放在前面，然后再放 treat
+  col_order <- unlist(lapply(treat_order, function(tid) {
+    c(pair_df$control_id[pair_df$treat_id == tid], tid)
+  }))
+  col_order <- unique(col_order[col_order %in% rownames(expr_m)])
+
+  list(expr_m = expr_m, md = md, pair_df = pair_df, col_order = col_order)
+}
+
+# Top 基因选择（来自 fit$stats）
+pick_top_genes <- function(fit, n = 20, by = c("fdr", "abs_diff")) {
+  by <- match.arg(by)
+  st <- fit$stats
+  if (by == "fdr") {
+    st %>% arrange(fdr, desc(abs(mean_diff))) %>%
+      slice_head(n = n) %>% pull(probe_id)
+  } else {
+    st %>% arrange(desc(abs(mean_diff))) %>%
+      slice_head(n = n) %>% pull(probe_id)
+  }
+}
+
+# Heatmap：按 pair 顺序（不对样本聚类）
+plot_heatmap_by_pair <- function(pairs_obj, top_genes, title = "Heatmap by Pairs") {
+  expr_m  <- pairs_obj$expr_m
+  md      <- pairs_obj$md
+  ord_col <- pairs_obj$col_order
+
+  expr_sub <- expr_m[ord_col, top_genes, drop = FALSE]
+  expr_z   <- t(scale(t(expr_sub)))
+
+  ann_col <- data.frame(
+    AgeGroup  = md$age_grp[match(ord_col, md$cluster_id)],
+    PairBlock = factor(md$pair_block[match(ord_col, md$cluster_id)])
+  )
+  rownames(ann_col) <- ord_col
+
+  pheatmap(
+    t(expr_z),
+    cluster_rows  = TRUE,   # 基因聚类（便于看模式）
+    cluster_cols  = FALSE,  # 样本不聚类，保留 pair 顺序
+    annotation_col = ann_col,
+    show_colnames = FALSE,
+    main = title
+  )
+}
+
+# Paired line（1:k 时，同一 treat 会有 k 条线）
+plot_paired_lines <- function(pairs_obj, gene, title = NULL) {
+  expr_m  <- pairs_obj$expr_m
+  pair_df <- pairs_obj$pair_df
+
+  df <- pair_df %>%
+    transmute(
+      pair_id = paste0("T:", treat_id),
+      y_young = expr_m[control_id, gene, drop = TRUE],
+      y_old   = expr_m[treat_id,   gene, drop = TRUE]
+    ) %>%
+    pivot_longer(cols = c(y_young, y_old),
+                 names_to = "grp", values_to = "expr") %>%
+    mutate(age_grp = factor(ifelse(grp == "y_young", "<70", ">=70"),
+                            levels = c("<70", ">=70")))
+
+  ggplot(df, aes(x = age_grp, y = expr, group = pair_id, color = pair_id)) +
+    geom_line(alpha = 0.5) +
+    geom_point(size = 2) +
+    stat_summary(aes(group = 1), fun = mean, geom = "line",
+                 linewidth = 1.1, linetype = "dashed", color = "black") +
+    stat_summary(aes(group = 1), fun = mean, geom = "point",
+                 size = 3, color = "black") +
+    theme_bw() +
+    labs(
+      title = title %||% paste0(gene, " (paired lines, old vs young)"),
+      x = "Age group", y = "log expression"
+    ) +
+    theme(legend.position = "none")
+}
+
+# 差值分布（Old - Young），可选择“每对”或“按 treat 平均”
+plot_diff_distribution <- function(pairs_obj, gene, mode = c("per_pair","per_treat_mean"),
+                                   title = NULL) {
+  mode   <- match.arg(mode)
+  expr_m <- pairs_obj$expr_m
+  pair_df <- pairs_obj$pair_df
+
+  diffs <- pair_df %>%
+    transmute(
+      treat_id,
+      diff = expr_m[treat_id, gene, drop = TRUE] -
+             expr_m[control_id, gene, drop = TRUE]
+    )
+
+  if (mode == "per_treat_mean") {
+    diffs <- diffs %>%
+      group_by(treat_id) %>%
+      summarise(diff = mean(diff, na.rm = TRUE), .groups = "drop")
+  }
+
+  ggplot(diffs, aes(x = diff)) +
+    geom_histogram(bins = 20, color = "white") +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    theme_bw() +
+    labs(
+      title = title %||% paste0(gene, " differences: Old - Young (", mode, ")"),
+      x = "Difference in log expression", y = "Count"
+    )
+}
+
+render_pair_views_for_region <- function(fit, region_name, expr_mat, meta_df,
+                                         top_n = 20, top_by = "fdr",
+                                         example_probe = NULL) {
+  pairs_obj <- extract_pairs_by_region(fit, region_name, expr_mat, meta_df)
+  top_genes <- pick_top_genes(fit, n = top_n, by = top_by)
+
+  plot_heatmap_by_pair(
+    pairs_obj, top_genes,
+    title = paste0(region_name, ": Top ", top_n, " by ", top_by, " (paired order)")
+  )
+
+  if (is.null(example_probe)) example_probe <- top_genes[1]
+  print(plot_paired_lines(
+    pairs_obj, gene = example_probe,
+    title = paste0(region_name, ": ", example_probe, " (paired lines)")
+  ))
+  print(plot_diff_distribution(
+    pairs_obj, gene = example_probe, mode = "per_pair",
+    title = paste0(region_name, ": ", example_probe, " diffs (per pair)")
+  ))
+  print(plot_diff_distribution(
+    pairs_obj, gene = example_probe, mode = "per_treat_mean",
+    title = paste0(region_name, ": ", example_probe, " diffs (per treat mean)")
+  ))
+
+  invisible(list(pairs = pairs_obj, top_genes = top_genes, example_probe = example_probe))
+}
+```
+
+```
