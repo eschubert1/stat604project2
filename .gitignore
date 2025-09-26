@@ -4,4 +4,8 @@
 .Rhistory
 .Rproj.user/
 
+# Ignore html files
+*.html
 
+# Ignore artifacts folder
+artifacts
