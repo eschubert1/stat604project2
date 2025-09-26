@@ -6,21 +6,18 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
 ```
 
-```{r}
+```{r, eval=T}
 # Load the data
 load("../data/brain.rda")
-
-summary(arraymeta)
-head(arraymeta)
-dim(expression)
-expression[1:5,1:5]
-dim(genemeta)
-genemeta[,1:5]
 ```
 
+There are some notable disparities in proportions across different metadata variables. First, the data consists of 86 patients with 71% male and 29% female. Some patients brain's are sampled multiple times, which leads to 75% male observations and 25% female observations. Additionally, array version 1 was used for 62% of observations and 38% were array version 2. There are imbalances in array versions used across labs and across regions, but more concerning are imbalances of regions across labs. Each lab has low counts for a different brain region (CB for Michigan, DLPFC for Irvine, and ANCG for Davis). In fact, the Davis lab did not have any samples from the ANCG region. Furthermore, only 13% of observations are from people older than 70 years old, while 87% are from younger people. It seems that most patients had more than one region of the brain sampled, and many times one of the regions was sampled multiple times. Possible fixed or random effects: lab, region, sex, age, array version, patient.
 ```{r}
 # Number of patients
 length(unique(arraymeta$patient))
@@ -31,12 +28,24 @@ colMeans(arraymeta[2:7])
 # Histogram of ages (by observation)
 hist(arraymeta$age, main="Distribution of observation ages")
 
-patients = unique(arraymeta[,c("patient", "age")])
+patients = unique(arraymeta[,c("patient", "age", "sex")])
 hist(patients$age, main="Distribution of patient ages")
+
+# Number of observations with age above 70
+num_above70 = sum(arraymeta$age >= 70)
+c((nrow(arraymeta)-num_above70), num_above70)
 
 # Relative frequency of each array version
 v2_prop = mean(arraymeta$arrayversion-1)
 c((1-v2_prop), v2_prop)
+
+# Relative frequency of each sex (per observation). Much higher proportion of male brains
+prop_female = mean(arraymeta$sex=="F")
+c(prop_female, 1-prop_female)
+
+# Relative frequency of each sex (per patient).
+prop_female = mean(patients$sex == "F")
+c(prop_female, 1-prop_female)
 
 # Frequencies of region by array version
 freq_table = matrix(nrow=2, ncol=3)
@@ -68,5 +77,340 @@ for(i in 2:4) {
 }
 freq_table
 
+# Determine number of repeat observations per patient
+counts = vector(length=nrow(patients))
+for(i in 1:nrow(patients)) {
+  counts[i] = sum(arraymeta$patient == patients$patient[i])
+}
+hist(counts)
+
+# Determine number of labs per patient
+arraymeta %>% 
+  group_by(patient) %>% 
+  summarize(lab.davis = max(lab.davis), 
+            lab.irvine = max(lab.irvine), 
+            lab.michigan = max(lab.michigan)) %>%
+  select(lab.davis, lab.irvine, lab.michigan) %>% 
+  rowSums() %>% 
+  hist(main = "Labs per patient")
+
+# Determine number of regions per patient
+arraymeta %>% 
+  group_by(patient) %>% 
+  summarize(region.ancg = max(region.ancg), 
+            region.cb = max(region.cb), 
+            region.dlpfc = max(region.dlpfc)) %>%
+  select(region.ancg, region.cb, region.dlpfc) %>% 
+  rowSums() %>% 
+  hist(main = "Brain regions sampled per patient")
+
+# Determine number of times each patient's brain was sampled in the same lab
+arraymeta %>% 
+  group_by(patient) %>% 
+  summarize(lab.davis = sum(lab.davis), 
+            lab.irvine = sum(lab.irvine), 
+            lab.michigan = sum(lab.michigan)) %>%
+  select(lab.davis, lab.irvine, lab.michigan) %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab_id", values_to = "count") %>%
+  ggplot(aes(x = count, fill = lab_id)) +
+  geom_bar() +
+  facet_wrap(vars(lab_id))
+
+# Determine number of times each patient's brain was sampled in the same region
+arraymeta %>% 
+  group_by(patient) %>% 
+  summarize(region.ancg = sum(region.ancg), 
+            region.cb = sum(region.cb), 
+            region.dlpfc = sum(region.dlpfc)) %>%
+  select(region.ancg, region.cb, region.dlpfc) %>% 
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region_id", values_to = "count") %>% 
+  ggplot(aes(x = count, fill = region_id)) +
+  geom_bar() +
+  facet_wrap(vars(region_id))
+```
+
+Some of the probesets are controls which detect bacterial (non-human) genes. A fixed amount of these bacterial genes are placed into each microarray, and so theoretically the brightness for these genes should be similar.  In reality, the mean brightness varies substantially across controls, as the side-by-side boxplots show.
+```{r}
+# 1939 controls
+sum(is.na(genemeta["sym",]))
+
+ii = which(is.na(genemeta["sym",]))
+control_means = apply(expression[,ii], 2, mean)
+probeset_means = apply(expression[,-ii], 2, mean)
+
+df.means = data.frame(mean = control_means, type = "control")
+df.means = rbind(df.means, cbind(mean = probeset_means, type="probeset"))
+rownames(df.means) = NULL
+
+df.means %>% ggplot(aes(x = type, group = type, y = mean)) +
+  geom_boxplot() +
+  ylab("Mean Expression") +
+  labs(title="Mean expression by group") +
+  theme(axis.text.y=element_blank())
+```
+
+Mean probeset expression by array version
+```{r}
+# Compute means of each probeset, grouped by array version.
+mean_versions = arraymeta %>% cbind(expression) %>% group_by(arrayversion) %>% 
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}")) %>%
+  pivot_longer(ends_with("_at"))
+
+# Compute means of each probeset, grouped by array version, and make boxplots
+# Does not appear to be large differences between distributions
+mean_versions %>% 
+  ggplot(aes(y = value, x = arrayversion, group = arrayversion)) +
+  geom_boxplot()
+
+# Compute means of each probeset, grouped by array version, and make histograms
+# Does not appear to be large differences between distributions
+mean_versions %>% mutate(arrayversion = factor(arrayversion)) %>% 
+  ggplot(aes(x = value, fill = arrayversion, group=arrayversion)) +
+  geom_histogram(alpha=0.5)
+```
+
+Mean probeset expression by array version and age group
+```{r}
+# Compute means of each probeset, grouped by array version.
+mean_versions_age = arraymeta %>% mutate(arrayversion = factor(arrayversion), above70 = factor(age >= 70)) %>% 
+  cbind(expression) %>% group_by(arrayversion, above70) %>%
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}"), .groups="drop") %>%
+  pivot_longer(ends_with("_at"))
+
+# Compute means of each probeset, grouped by array version, and make boxplots
+# Does not appear to be large differences between distributions
+mean_versions_age %>% 
+  ggplot(aes(y = value, x = arrayversion, fill = above70)) +
+  geom_boxplot()
+
+# Compute means of each probeset, grouped by array version, and make histograms
+# Does not appear to be large differences between distributions
+mean_versions_age %>% 
+  ggplot(aes(x = value, fill = arrayversion)) +
+  geom_histogram(alpha=0.5) +
+  facet_wrap(vars(above70))
+```
+
+Mean probeset expression by sex
+```{r}
+# Compute means of each probeset, grouped by sex.
+mean_sex = arraymeta %>% mutate(sex = factor(sex)) %>% 
+  cbind(expression) %>% group_by(sex) %>% 
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}")) %>%
+  pivot_longer(ends_with("_at"))
+
+# Compute means of each probeset, grouped by sex, and make boxplots
+# Does not appear to be large differences between distributions
+mean_sex %>% 
+  ggplot(aes(y = value, x = sex)) +
+  geom_boxplot()
+
+# Compute means of each probeset, grouped by sex, and make histograms
+# Does not appear to be large differences between distributions
+mean_sex %>%
+  ggplot(aes(x = value, fill = sex)) +
+  geom_histogram(alpha=0.5)
+```
+
+Mean probeset expression by sex and age
+```{r}
+# Compute means of each probeset, grouped by sex.
+mean_sex_age = arraymeta %>% mutate(sex = factor(sex), above70 = factor(age >= 70)) %>% 
+  cbind(expression) %>% group_by(sex, above70) %>% 
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}"), .groups = "drop") %>%
+  pivot_longer(ends_with("_at"))
+
+# Compute means of each probeset, grouped by sex, and make boxplots
+# Does not appear to be large differences between distributions
+mean_sex_age %>% 
+  ggplot(aes(y = value, x = sex, fill=above70)) +
+  geom_boxplot()
+
+# Compute means of each probeset, grouped by sex, and make histograms
+# Does not appear to be large differences between distributions
+mean_sex_age %>%
+  ggplot(aes(x = value, fill = sex)) +
+  geom_histogram(alpha=0.5) +
+  facet_wrap(vars(above70))
+```
+
+Mean probeset expression by lab and age.
+```{r}
+# Compute means of each probeset, grouped by lab.
+mean_lab_age = arraymeta %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab.name", values_to = "lab.indicator") %>% 
+  filter(lab.indicator == 1) %>% 
+  mutate(lab.name = factor(lab.name), above70 = factor(age >= 70)) %>% 
+  cbind(expression) %>% group_by(lab.name, above70) %>% 
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}"), .groups = "drop") %>%
+  pivot_longer(ends_with("_at"))
+
+# Compute means of each probeset, grouped by sex, and make boxplots
+# Does not appear to be large differences between distributions
+mean_lab_age %>% 
+  ggplot(aes(y = value, x = lab.name, fill=above70)) +
+  geom_boxplot()
+```
+
+Mean probeset expression by region and age.
+```{r}
+# Compute means of each probeset, grouped by region.
+mean_region_age = arraymeta %>% 
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name), above70 = factor(age >= 70)) %>% 
+  cbind(expression) %>% group_by(region.name, above70) %>% 
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}"), .groups = "drop") %>%
+  pivot_longer(ends_with("_at"))
+
+# Compute means of each probeset, grouped by sex, and make boxplots
+# Does not appear to be large differences between distributions
+mean_region_age %>% 
+  ggplot(aes(y = value, x = region.name, fill=above70)) +
+  geom_boxplot()
+```
+
+Box plots for probeset 1 by region and age
+```{r}
+# Compute means of each probeset, grouped by region and age.
+mean_1007_s_region_age = arraymeta %>% 
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name), above70 = factor(age >= 70)) %>% 
+  cbind(probe1 = expression[,1])
+
+# Compute means of each probeset, grouped by region and age, and make boxplots
+# Does not appear to be large differences between distributions
+mean_1007_s_region_age %>% 
+  ggplot(aes(y = probe1, x = region.name, fill=above70)) +
+  geom_boxplot()
+```
+
+```{r, eval=T}
+mean_age = arraymeta %>%
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name), above70 = factor(age >= 70)) %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab.name", values_to = "lab.indicator") %>% 
+  filter(lab.indicator == 1) %>% 
+  mutate(region.name = factor(region.name), lab.name = factor(lab.name), 
+         sex = factor(sex), arrayversion = factor(arrayversion), above70 = factor(age >= 70)) %>% 
+  cbind(expression) %>% 
+  group_by(region.name, lab.name, sex, arrayversion, above70) %>% 
+  summarize(across(ends_with("_at"), mean, .names = ".names = mean_{.col}"), .groups = "drop") %>% 
+  pivot_longer(ends_with("_at"), names_to = "probeset", values_to = "mean_expression")
+
+mean_age_diff = mean_age %>% 
+  mutate(probeset = factor(probeset), age_expression = (mean_expression - as.logical(above70)*2*mean_expression)) %>% 
+  group_by(region.name, lab.name, sex, arrayversion, probeset) %>% 
+  summarize(diff_expression = sum(age_expression), .groups="drop")
+
+unique(mean_age_diff[,1:4]) %>% nrow() # 30 unique combinations of region, lab, sex, arrayversion
+
+# This plot identifies combinations where there were no patients older than 70
+# Any of the boxplots above 0 did not have patients older than 70
+mean_age_diff %>% 
+  ggplot(aes(y = diff_expression, x = sex, fill = arrayversion)) +
+  geom_boxplot() +
+  facet_wrap(vars(region.name, lab.name))
+```
+
+ANCG region is missing lab.davis, otherwise complete. Region CB is complete for lab, sex, and arrayversion. Region DLPFC is missing arrayversion 2 from lab.irvine, otherwise complete.
+```{r, fig.show='hold', out.width="33%", echo=F, eval=T}
+ mean_age_diff %>% filter(probeset == ".names = mean_1053_at") %>% 
+   ggplot(aes(x = arrayversion, y = diff_expression, fill=region.name)) +
+   geom_boxplot()
+
+ mean_age_diff %>% filter(probeset == ".names = mean_1053_at") %>% 
+   ggplot(aes(x = sex, y = diff_expression, fill=region.name)) +
+   geom_boxplot()
+ 
+  mean_age_diff %>% filter(probeset == ".names = mean_1053_at") %>% 
+   ggplot(aes(x = lab.name, y = diff_expression, fill=region.name)) +
+   geom_boxplot()
+```
+
+Bias in lab.irvine, for DLPFC, but probably because no samples above age 70
+```{r}
+mean_age_diff %>% filter(region.name == "region.dlpfc") %>% 
+  ggplot(aes(x = lab.name, y = diff_expression)) +
+  geom_boxplot()
+
+arraymeta %>% filter(lab.irvine == 1, region.dlpfc == 1)
+
+arraymeta %>% filter(lab.davis == 1, region.dlpfc == 1)
+```
+
+```{r}
+meta_factors = arraymeta %>%
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name), above70 = factor(age >= 70)) %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab.name", values_to = "lab.indicator") %>% 
+  filter(lab.indicator == 1) %>% 
+  mutate(region.name = factor(region.name), lab.name = factor(lab.name), 
+         sex = factor(sex), arrayversion = factor(arrayversion), above70 = factor(age >= 70)) %>%
+  select(!c(region.indicator, lab.indicator)) %>% 
+  group_by(region.name, lab.name, sex, arrayversion, above70) %>%
+  summarize(n = n(), .groups = "drop")
+
+meta_factors %>% filter(region.name == "region.ancg")
+meta_factors %>% filter(region.name == "region.cb")
+meta_factors %>% filter(region.name == "region.dlpfc")
+```
+
+Create a heatmap of the expression observations. There appear to be clear bands across the rows. Does this indicate for a given observation, the expression tends to either be higher or lower?
+```{r, eval=F, echo=F}
+# Order expression by patient
+heatmap(expression, Rowv = NA, Colv = NA, revC = TRUE, scale = "column")
+
+# Order expression by lab
+ix = order(arraymeta$lab.davis, arraymeta$lab.irvine, arraymeta$lab.michigan)
+lab.symb = c(rep("M", 163), rep("I", 117), rep("D", 106))
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = lab.symb)
+
+# Order expression by region
+ix = order(arraymeta$region.ancg, arraymeta$region.cb, arraymeta$region.dlpfc)
+region.symb = c(rep("D", 178), rep("C", 81), rep("A", 127))
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = region.symb)
+
+# Order expression by arrayversion
+ix = sort(arraymeta$arrayversion, index.return = TRUE)$ix
+version.symb = c(rep("A1", 1012), rep("A2", 146))
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = version.symb)
+
+# Order expression by lab, then region
+ix = order(arraymeta$lab.davis, arraymeta$lab.irvine, arraymeta$lab.michigan, 
+           arraymeta$region.ancg, arraymeta$region.cb, arraymeta$region.dlpfc)
+labregion.symb = c(rep("M+D", 84), rep("M+C", 18), rep("M+A", 61),
+                   rep("I+D", 9), rep("I+C", 42), rep("I+A", 66),
+                   rep("D+D", 85), rep("D+C", 21))
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = labregion.symb)
+```
+
+Since there is expression data for each probeset, could we pivot the data set to be (386 x 22277) x 7, where the response variable is expression, and the dependent variables are probeset, patient, region, lab, age_group, sex, and arrayversion? Probeset effects would be considered fixed, while patient, region, lab, age_group, sex, and arrayversion could be random.
+
+Is there a way to do a simple t-test? For each probeset, split the data by age group and the compute 2 sample t statistics.
+```{r}
+expression_t_test = function(data) {
+  age_below70 = data %>% filter(above70 == 0)
+  age_above70 = data %>% filter(above70 == 1)
+  tstat = t.test(age_below70$expression, age_above70$expression)
+  tstat$statistic
+}
+
+two_sample_t_stats = arraymeta %>% mutate(above70 = (age >= 70)) %>% 
+  cbind(expression) %>% 
+  pivot_longer(ends_with("_at"), names_to = "probeset", values_to = "expression") %>%
+  group_by(probeset) %>% 
+  summarize(tstats = expression_t_test(data.frame(expression, above70)))
+  
+summary(two_sample_t_stats$tstats)
+low_stats = which(two_sample_t_stats$tstats < -2.85)
+
+two_sample_t_stats[low_stats,]
+
+qqnorm(two_sample_t_stats$tstats)
+qqline(two_sample_t_stats$tstats)
 ```
 
