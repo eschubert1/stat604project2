@@ -1,0 +1,238 @@
+---
+title: "STATS 604 Project 2 Local FDR Analysis"
+author: "Ethan Schubert"
+date: "2025-09-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(locfdr)
+```
+
+```{r, eval=T}
+# Load the data
+load("../data/brain.rda")
+```
+
+In this analysis, we hope to identify promising genes which are differentially expressed between two age groups, those younger than 70 and those 70 or older. The data consists of 381 microarray observations from 86 patients on 22277 probesets, 1931 of which are bacterial controls. Let $Y_i^j(0)$ be the expression of probeset j from observation i where the patient was younger than 70, and $Y_i^j(1)$ be the expression of probeset j from observation i where the patient was older than 70. The quantity we wish to estimate is $E[Y_i^j(1) - Y_i^j(0)|region, lab]$, but only one of $Y_i^j(0)$ and $Y_i^j(1)$ is ever observed, so differential expression cannot be estimated directly per observation. Instead, we will fit a linear model for each probeset of the form:
+$$Y_i^j(k) = \beta_0 + \beta_1*I(age\_group = k) + \beta_{2r}*region_r + \beta_{3r}*region_r*I(age\_group = k) + \beta_{4l}*lab_l$$
+Our quantity of interest can then be estimated by: $\hat{\beta}_1 + \hat{\beta}_{3r}*region_r$. We then construct "z-values" by dividing these estimates by their standard error to obtain 22277 values for each brain region. Subsequently, we perform local FDR analysis on each set of values to identify a candidate list of promising genes. 
+```{r, eval=F, echo=F}
+# Rearrange data into long form
+expression_long_form = arraymeta %>% mutate(above70 = (age >= 70)) %>% 
+  cbind(expression) %>% 
+  pivot_longer(ends_with("_at"), names_to = "probeset", values_to = "expression") %>%
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name)) %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab.name", values_to = "lab.indicator") %>% 
+  filter(lab.indicator == 1) %>% 
+  select(-c(region.indicator, lab.indicator))
+```
+
+```{r, eval=F, echo=F}
+# Will OLS work? No! Maximum memory of 16 GB reached. Mixed model will definitely not work
+ols_model = lm(expression ~ above70 + probeset*region.name + lab.name + patient, data = expression_long_form)
+
+# This also does not work
+ols_model = lm(expression ~ above70 + probeset + region.name + lab.name + patient, data = expression_long_form)
+```
+
+```{r, eval=F, echo=F}
+# Try regression on a single probeset
+mm1 = expression_long_form %>% filter(probeset == "1007_s_at") %>% 
+  lmer(formula = expression ~ above70*region.name + (1 | patient) + (1 | lab.name))
+
+mm1summary = summary(mm1)
+
+# Test reformulate, seems to work
+termstring = c("above70*region.name", "(1 | patient)", "(1 | lab.name)")
+fm = reformulate(termstring, response=as.name(probeset))
+```
+
+First, we standardize the data by rows and columns of the expression data to account for natural differences in probeset 'stickiness' and differences due to experimental variability in the microarrays. First the columns (probesets) are standardized, then the rows (micoarrays) successively for 5 iterations.
+```{r}
+# Doubly-standardize expression data (rows and columns)
+expression_standardized = expression
+for(i in 1:5) {
+  expression_standardized = scale(expression_standardized)
+  expression_standardized = t(scale(t(expression_standardized)))
+}
+```
+
+Next we plot the standardized expression values, sorted by region and lab. The first heatmap uses a common color scale for the whole array, while the second plot standardizes the colors by column and the third plot by rows.
+```{r, fig.show='hold', out.width="33%"}
+# Check values
+ix = order(arraymeta$lab.davis, arraymeta$lab.irvine, arraymeta$lab.michigan, 
+           arraymeta$region.ancg, arraymeta$region.cb, arraymeta$region.dlpfc)
+labregion.symb = c(rep("M+D", 84), rep("M+C", 18), rep("M+A", 61),
+                   rep("I+D", 9), rep("I+C", 42), rep("I+A", 66),
+                   rep("D+D", 85), rep("D+C", 21))
+
+# No scale
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "none", labRow = labregion.symb)
+
+# Column scale
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = labregion.symb)
+
+# Row scale
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "row", labRow = labregion.symb)
+```
+
+Next, we fit the linear models for each probeset and save the coefficient estimates and covariance estimates.
+```{r, eval = F}
+lm_coefs = list()
+lm_vcovs = list()
+expression_array = arraymeta %>% mutate(above70 = (age >= 70)) %>% 
+  cbind(expression_standardized) %>% 
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name)) %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab.name", values_to = "lab.indicator") %>% 
+  filter(lab.indicator == 1) %>% 
+  select(-c(region.indicator, lab.indicator))
+
+#covariates =  c("above70*region.name", "lab.name", "(1 | patient)")
+covariates = c("above70*region.name", "lab.name")
+for(i in 1:ncol(expression)) {
+  probeset = colnames(expression)[i]
+  fm = reformulate(covariates, response = as.name(probeset))
+  #m1 = lmer(fm, data=expression_array)
+  m1 = lm(fm, data=expression_array)
+  #lm_coefs[[i]] = fixef(m1)
+  lm_coefs[[i]] = coef(m1)
+  lm_vcovs[[i]] = vcov(m1)
+}
+
+# save(lm_coefs, lm_vcovs, file="../artifacts/lm_coefs.RData")
+```
+
+After fitting the models, we estimate the root mean square correlation between columns to be about 0.3, which is somewhat high. This correlation indicates that the later standard error calculations are likely biased downwards, and the true standard errors may be larger.
+```{r}
+load(file="../artifacts/lm_coefs.RData")
+
+# Track row and column dims
+n = nrow(expression)
+N = ncol(expression)
+
+# Compute row correlations
+column_cors = cor(expression_standardized)
+rho_sum_squares = 0
+for(i in 1:ncol(column_cors)) {
+  for(j in 1:i) {
+    rho_sum_squares = rho_sum_squares + column_cors[i,j]^2
+  }
+}
+
+alpha_bar = sqrt(rho_sum_squares/(choose(N,2)))
+alpha_hat = sqrt(n/(n-1)*(alpha_bar^2 - 1/(n-1)))
+
+# Effective sample size
+Neff = N/(1+(N-1)*alpha_hat^2)
+```
+
+We then compute the z-values for each region, and perform local FDR analysis. 
+```{r}
+# Compute z values for differential expression by region.
+ancg.z = vector(length=ncol(expression))
+cb.z = vector(length = ncol(expression))
+dlpfc.z = vector(length = ncol(expression))
+
+ancg_ind = c(0, 1, 0, 0, 0, 0, 0, 0)
+cb_ind = c(0, 1, 0, 0, 0, 0, 1, 0)
+dlpfc_ind = c(0, 1, 0, 0, 0, 0, 0, 1)
+for(i in 1:ncol(expression)) {
+  betas = lm_coefs[[i]]
+  cv = lm_vcovs[[i]]
+  ancg_hat = betas%*%ancg_ind
+  cb_hat = betas%*%cb_ind
+  dlpfc_hat = betas%*%dlpfc_ind
+  ancg_se = c(sqrt(t(ancg_ind)%*%cv%*%ancg_ind)[1,1])
+  cb_se = c(sqrt(t(cb_ind)%*%cv%*%cb_ind)[1,1])
+  dlpfc_se = c(sqrt(t(dlpfc_ind)%*%cv%*%dlpfc_ind)[1,1])
+  ancg.z[i] = ancg_hat / ancg_se
+  cb.z[i] = cb_hat / cb_se
+  dlpfc.z[i] = dlpfc_hat / dlpfc_se
+}
+```
+
+The QQ plots indicate that the right tail of z-values from the ANCG region deviate from a Normal distribution, while the other regions follow a Normal distribution quite closely.
+```{r, fig.show='hold', out.width="33%"}
+# Plot of z-values
+#hist(ancg.z)
+#hist(cb.z)
+#hist(dlpfc.z)
+
+qqnorm(ancg.z)
+qqline(ancg.z)
+
+qqnorm(cb.z)
+qqline(cb.z)
+
+qqnorm(dlpfc.z)
+qqline(dlpfc.z)
+```
+
+Show below are histograms of the z-values with (maximum-likelihood) estimated null densities shown in dashed blue lines and the estimated mixture densities shown with the green lines. For ANCG, the estimated null proportion is 0.982, 1 for CB, and 0.964 for DLPFC. The triangles mark the points where more extreme z-values correspond to local FDR of 0.2 or less.
+```{r, fig.show='hold', out.width="33%"}
+ancg.fdr = locfdr(ancg.z, nulltype=1)
+cb.fdr = locfdr(cb.z, nulltype=1)
+dlpfc.fdr = locfdr(dlpfc.z, nulltype=1)
+#all.fdr = locfdr(scale(c(ancg.z, cb.z, dlpfc.z))) # Low power
+```
+
+The expected false discovery rate for ANCG is 0.555, 0.459 for CB, and 0.573 for DLPFC. All three are quite high, which indicates that this setup may have low power in detecting differential gene expression.
+```{r}
+ancg.fdr$Efdr
+cb.fdr$Efdr
+dlpfc.fdr$Efdr
+```
+
+Next, we plot the 'interesting' z-values (those with local FDR of 0.2 or less) against log local FDR along with the estimated standard errors. Note that log(0.2) = -1.609. For ANCG, the rightmost values have log local FDR well below -1.609, but the margin of error is considerably higher for CB. However, as shown earlier the estimated root mean square (column) correlation was high, so the estimated standard errors are likely too small. Hence, even the more extreme ANCG z-values may be unreliable.
+```{r, fig.show='hold', out.width="49%"}
+# Plot correlations of log(fdr)
+ii = which(!between(ancg.fdr$mat[,"x"], ancg.fdr$z.2[1], ancg.fdr$z.2[2]))
+plot(ancg.fdr$mat[ii,"x"],log(ancg.fdr$mat[ii,"fdr"]), type="l", ylim=c(-10, 0),
+     xlab = "ANCG z-values", ylab="log fdr", main="Local log FDR with standard errors")
+lines(ancg.fdr$mat[ii,"x"],log(ancg.fdr$mat[ii,"fdr"]) - 1.96*ancg.fdr$mat[ii,"lfdrse"], col='red')
+lines(ancg.fdr$mat[ii,"x"],log(ancg.fdr$mat[ii,"fdr"]) + 1.96*ancg.fdr$mat[ii,"lfdrse"], col='red')
+abline(h = -1.609, col='blue')
+
+
+ii = which(!between(cb.fdr$mat[,"x"], cb.fdr$z.2[1], cb.fdr$z.2[2]))
+plot(cb.fdr$mat[ii,"x"], log(cb.fdr$mat[ii,"fdr"]), type="l", ylim=c(-10, 0),
+     xlab = "CB z-values", ylab="log fdr", main="Local log FDR with standard errors")
+lines(cb.fdr$mat[ii,"x"], log(cb.fdr$mat[ii,"fdr"]) - 1.96*cb.fdr$mat[ii,"lfdrse"], col='red')
+lines(cb.fdr$mat[ii,"x"], log(cb.fdr$mat[ii,"fdr"]) + 1.96*cb.fdr$mat[ii,"lfdrse"], col='red')
+```
+
+To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. There are 94 such probesets, 10 of which are controls. Although it may be surprising that this list included some controls, it is to be expected that some of the candidates correspond to false discoveries. After excluding these controls and taking the 20 genes corresponding to the lowest local FDR, we arrive at our final list.
+```{r}
+# Number of genes from right tail
+sum(ancg.z > ancg.fdr$z.2[2])
+# Tentative list
+ii = which(ancg.z > ancg.fdr$z.2[2])
+interesting_probesets = colnames(expression)[ii]
+
+interesting_genes = genemeta[,interesting_probesets]
+
+# Number of interesting genes which are controls
+sum(is.na(interesting_genes[2,]))
+
+no_controls = which(!is.na(interesting_genes[2,]))
+# Take top 20 z-values
+z20 = sort((ancg.z[ii])[no_controls], decreasing=TRUE)[20]
+ii_final = which(ancg.z >= z20 & !is.na(genemeta[2,]))
+
+final_probesets = colnames(expression)[ii_final]
+final_genes = genemeta[2,final_probesets]
+
+final_list = data.frame(gene = final_genes, region = "ANCG", z = ancg.z[ii_final], fdr = ancg.fdr$fdr[ii_final])
+final_list = final_list[sort(final_list$z, decreasing=TRUE, index.return=TRUE)$ix,]
+final_list
+```
+
