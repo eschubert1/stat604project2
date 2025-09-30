@@ -1,0 +1,433 @@
+---
+title: "Age-Group Prediction from Brain Microarray: Lasso Models (± Interactions)"
+author: "Your Name"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: readable
+  pdf_document: default
+  word_document: default
+---
+
+# Overview
+
+This notebook fits two logistic models to predict **AgeGroup (≥70 vs \<70)** from microarray expression:
+
+-   **Model A:** Lasso logistic regression with **metadata + gene main effects**\
+-   **Model B:** Lasso logistic regression with **metadata + gene main effects + (gene × binary)** interactions for six binary design variables (no gene:gene interactions)
+
+It also reports **AUROC, Accuracy, Sensitivity, Specificity**, and prints **top gene main-effect coefficients** for each model with ProbeID → Gene symbol → Chromosome.
+
+> Assumes the working directory contains `brain.rda` with `arraymeta`, `expression`, and `genemeta` (rows `sym` and `chrom`).
+
+# Setup & Packages
+
+```{r setup, message=FALSE, warning=FALSE}
+if (!requireNamespace("glmnet", quietly = TRUE)) install.packages("glmnet")
+if (!requireNamespace("pROC", quietly = TRUE))   install.packages("pROC")
+if (!requireNamespace("Matrix", quietly = TRUE)) install.packages("Matrix")
+
+library(glmnet)
+library(pROC)
+library(Matrix)
+
+# Helper to make a tidy top-genes table from a coefficient vector
+make_gene_table <- function(coef_vec, gene_names, genemeta, top_n = 20, model_label = "") {
+  coef_g <- coef_vec[intersect(names(coef_vec), gene_names)]
+  coef_g <- coef_g[coef_g != 0]
+  if (length(coef_g) == 0L) {
+    warning(sprintf("No nonzero gene coefficients for model '%s'.", model_label))
+    return(data.frame())
+  }
+  ord <- order(abs(coef_g), decreasing = TRUE)
+  coef_g <- coef_g[ord]
+  coef_g <- head(coef_g, top_n)
+  probes <- names(coef_g)
+  out <- data.frame(
+    Model       = model_label,
+    Rank        = seq_along(probes),
+    ProbeID     = probes,
+    Gene        = genemeta["sym", probes],
+    Chromosome  = genemeta["chrom", probes],
+    Coefficient = as.numeric(coef_g),
+    Direction   = ifelse(coef_g > 0, "Positive (↑ ≥70)", "Negative (↑ <70)"),
+    stringsAsFactors = FALSE
+  )
+  rownames(out) <- NULL
+  out
+}
+
+# Metrics helpers (AUC, Accuracy, Sensitivity, Specificity)
+.compute_metrics <- function(y_true, prob, thr) {
+  pred <- as.integer(prob >= thr)
+  TP <- sum(pred == 1 & y_true == 1)
+  TN <- sum(pred == 0 & y_true == 0)
+  FP <- sum(pred == 1 & y_true == 0)
+  FN <- sum(pred == 0 & y_true == 1)
+  acc  <- (TP + TN) / length(y_true)
+  sens <- ifelse((TP+FN) > 0, TP/(TP+FN), NA_real_)
+  spec <- ifelse((TN+FP) > 0, TN/(TN+FP), NA_real_)
+  bal  <- mean(c(sens, spec), na.rm = TRUE)
+  data.frame(Threshold = thr, Accuracy = acc, Sensitivity = sens,
+             Specificity = spec, BalancedAccuracy = bal, TP, TN, FP, FN)
+}
+eval_model <- function(model_name, y_true, prob) {
+  roc_obj <- roc(y_true, prob, quiet = TRUE)
+  auc_val <- as.numeric(auc(roc_obj))
+  thr_y   <- as.numeric(coords(roc_obj, x = "best", best.method = "youden",
+                               ret = "threshold", transpose = TRUE))
+  m_y     <- .compute_metrics(y_true, prob, thr_y)
+  m_05    <- .compute_metrics(y_true, prob, 0.5)
+  m_y$AUROC <- auc_val; m_y$Model <- model_name; m_y$Rule <- "Youden J"
+  m_05$AUROC <- auc_val; m_05$Model <- model_name; m_05$Rule <- "Fixed 0.5"
+  rbind(m_y[, c("Model","Rule","AUROC","Threshold","Accuracy","Sensitivity","Specificity","BalancedAccuracy","TP","TN","FP","FN")],
+        m_05[,c("Model","Rule","AUROC","Threshold","Accuracy","Sensitivity","Specificity","BalancedAccuracy","TP","TN","FP","FN")])
+}
+```
+
+# Load Data and Build Control/Feature Sets
+
+```{r load_data}
+load("brain.rda")
+
+expr_df <- as.data.frame(expression)
+combined <- cbind(arraymeta, expr_df)
+
+meta_cols <- colnames(arraymeta)
+expr_cols <- setdiff(colnames(combined), meta_cols)
+
+affx_cols  <- grep("^AFFX", expr_cols, value = TRUE)
+gene_cols  <- setdiff(expr_cols, affx_cols)
+
+control_data <- combined[, c(meta_cols, affx_cols)]
+feature_data <- combined[, c(meta_cols, gene_cols)]
+
+dim(control_data); dim(feature_data)
+```
+
+# Metadata and Expression Matrices
+
+```{r meta_and_mats}
+# Separate expression columns
+expr_cols_control <- setdiff(colnames(control_data), meta_cols)
+expr_cols_feature <- setdiff(colnames(feature_data), meta_cols)
+
+# Build clean metadata frame
+meta <- combined[, meta_cols]
+meta$region    <- factor(with(meta, ifelse(region.ancg==1,"ANCG",
+                                           ifelse(region.dlpfc==1,"DLPFC",
+                                                  ifelse(region.cb==1,"Cerebellum", NA)))))
+meta$lab       <- factor(with(meta, ifelse(lab.davis==1,"Davis",
+                                           ifelse(lab.irvine==1,"Irvine",
+                                                  ifelse(lab.michigan==1,"Michigan", NA)))))
+meta$age_group <- factor(ifelse(meta$age >= 70, "70plus", "under70"),
+                         levels = c("under70","70plus"))
+meta$arrayversion <- factor(meta$arrayversion)
+
+# Expression matrices (samples × genes)
+expr_ctrl <- as.matrix(control_data[, expr_cols_control, drop=FALSE])
+expr_feat <- as.matrix(feature_data[, expr_cols_feature, drop=FALSE])
+
+# Binary outcome
+meta$AgeGroup <- ifelse(meta$age >= 70, 1, 0)
+y <- meta$AgeGroup
+```
+
+# Common Preprocessing
+
+```{r preprocessing}
+# === Preprocessing (keep ALL genes) ===
+# Do NOT filter/limit by variance; keep every gene in expr_feat
+X_genes_noint <- expr_feat                      # samples × ALL genes
+X_meta_noint  <- model.matrix(~ region + sex + lab + arrayversion, data = meta)[, -1, drop = FALSE]
+
+# Train/test split indices (fixed for both models)
+set.seed(123)
+n <- nrow(X_genes_noint)
+idx_tr <- sample(seq_len(n), size = floor(0.8 * n))
+idx_te <- setdiff(seq_len(n), idx_tr)
+
+```
+
+# Model A: Lasso Logistic (No Interactions)
+
+```{r model_A, message=FALSE}
+X_A <- cbind(X_meta_noint, X_genes_noint)
+X_A_tr <- X_A[idx_tr, , drop = FALSE]; y_tr <- y[idx_tr]
+X_A_te <- X_A[idx_te, , drop = FALSE]; y_te <- y[idx_te]
+
+cv_A <- cv.glmnet(x = X_A_tr, y = y_tr, family = "binomial",
+                  alpha = 1, nfolds = 5, standardize = TRUE, type.measure = "auc")
+lambda_A <- cv_A$lambda.1se
+fit_A <- glmnet(x = X_A_tr, y = y_tr, family = "binomial",
+                alpha = 1, lambda = lambda_A, standardize = TRUE)
+
+prob_A <- as.numeric(predict(fit_A, newx = X_A_te, type = "response"))
+metrics_A <- eval_model("Lasso (no interactions)", y_te, prob_A)
+metrics_A
+```
+
+## Top Gene Main-Effects — Model A
+
+```{r top_genes_A}
+coef_A <- as.matrix(coef(fit_A))[, 1]
+names(coef_A) <- rownames(coef(fit_A))
+top_genes_A <- make_gene_table(coef_A, colnames(X_genes_noint), genemeta,
+                               top_n = 20, model_label = "Lasso (no interactions)")
+top_genes_A
+```
+
+# Model B: Lasso Logistic with Gene × Binary Interactions
+
+```{r model_B, message=FALSE}
+# === Model B (with interactions) — use ALL genes ===
+# Sparse matrices for memory efficiency
+G  <- expr_feat                         # <-- keep ALL genes (no filtering)
+Gs <- Matrix(G, sparse = TRUE)
+
+# Choose six binary columns for interactions (unchanged)
+is_binary01 <- function(x) {
+  ux <- sort(unique(na.omit(as.numeric(as.character(x)))))
+  length(ux) == 2 && all(ux %in% c(0,1))
+}
+preferred_bins <- c("region.ancg","region.dlpfc","region.cb",
+                    "lab.davis","lab.irvine","lab.michigan")
+bin_candidates <- names(meta)[vapply(meta, is_binary01, logical(1))]
+bin_vars <- intersect(preferred_bins, bin_candidates)
+if (length(bin_vars) < 6) {
+  extras <- setdiff(bin_candidates, bin_vars)
+  bin_vars <- c(bin_vars, head(extras, 6 - length(bin_vars)))
+}
+if (length(bin_vars) > 6) bin_vars <- bin_vars[1:6]
+bin_vars
+
+B <- as.matrix(meta[, bin_vars, drop = FALSE])
+B <- apply(B, 2, function(v) as.numeric(as.character(v)))
+mode(B) <- "numeric"
+
+# Build interaction blocks: Diag(b_j) %*% Gs for each binary
+interaction_blocks <- vector("list", ncol(B))
+for (j in seq_len(ncol(B))) {
+  Dj <- Diagonal(n = nrow(Gs), x = B[, j])
+  Gj <- Dj %*% Gs
+  colnames(Gj) <- paste0(colnames(G), ":I_", colnames(B)[j])
+  interaction_blocks[[j]] <- Gj
+}
+# combine sparse blocks (Matrix::cBind keeps sparsity)
+Ints <- do.call(cbind, interaction_blocks)        # combines and keeps sparsity
+if (!inherits(Ints, "dgCMatrix")) {
+  Ints <- methods::as(Ints, "dgCMatrix")         # ensure a sparse class
+}
+
+# Meta main effects (sparse)
+X_meta_B <- model.matrix(~ region + sex + lab + arrayversion, data = meta)[, -1, drop = FALSE]
+X_meta_B <- Matrix(X_meta_B, sparse = TRUE)
+
+# Final design: META + ALL genes + interactions (all sparse)
+X_B <- cbind(X_meta_B, Gs, Ints)
+
+# Split with same indices
+X_B_tr <- X_B[idx_tr, ]; X_B_te <- X_B[idx_te, ]
+
+cv_B <- cv.glmnet(x = X_B_tr, y = y_tr, family = "binomial",
+                  alpha = 1, nfolds = 5, standardize = TRUE, type.measure = "auc")
+lambda_B <- cv_B$lambda.1se
+fit_B <- glmnet(x = X_B_tr, y = y_tr, family = "binomial",
+                alpha = 1, lambda = lambda_B, standardize = TRUE)
+
+prob_B <- as.numeric(predict(fit_B, newx = X_B_te, type = "response"))
+metrics_B <- eval_model("Lasso (with interactions)", y_te, prob_B)
+metrics_B
+
+```
+
+## Top Gene Main-Effects — Model B
+
+```{r top_genes_B}
+coef_B <- as.matrix(coef(fit_B))[, 1]
+names(coef_B) <- rownames(coef(fit_B))
+top_genes_B <- make_gene_table(coef_B, colnames(Gs), genemeta,
+                               top_n = 20, model_label = "Lasso (with interactions) — main effects")
+top_genes_B
+```
+
+## (Optional) All Interaction Coefficients
+
+```{r interaction_table, eval=TRUE}
+# Extract all interaction-term coefficients (nonzero)
+is_int <- grepl(":I_", names(coef_B), fixed = TRUE)
+coef_int <- coef_B[is_int]
+coef_int <- coef_int[coef_int != 0]
+
+parse_int_name <- function(nm) {
+  p <- strsplit(nm, ":I_", fixed = TRUE)[[1]]
+  data.frame(ProbeID = p[1], BinaryVar = p[2], stringsAsFactors = FALSE)
+}
+parsed <- do.call(rbind, lapply(names(coef_int), parse_int_name))
+
+interaction_coeffs <- within(parsed, {
+  Coefficient <- as.numeric(coef_int)
+  Gene        <- genemeta["sym", ProbeID]
+  Chromosome  <- genemeta["chrom", ProbeID]
+  AbsCoef     <- abs(Coefficient)
+})
+interaction_coeffs <- interaction_coeffs[order(interaction_coeffs$AbsCoef, decreasing = TRUE), ]
+row.names(interaction_coeffs) <- NULL
+
+head(interaction_coeffs, 20)
+```
+
+# Side-by-Side Metrics Summary
+
+```{r metrics_summary}
+metrics_table <- rbind(metrics_A, metrics_B)
+metrics_table
+
+round_metrics <- within(metrics_table, {
+  AUROC <- round(AUROC, 3)
+  Threshold <- round(Threshold, 3)
+  Accuracy <- round(Accuracy, 3)
+  Sensitivity <- round(Sensitivity, 3)
+  Specificity <- round(Specificity, 3)
+  BalancedAccuracy <- round(BalancedAccuracy, 3)
+})
+round_metrics
+```
+
+# (Optional) Save Outputs
+
+```{r save_csvs, eval=FALSE}
+# write.csv(top_genes_A, "top_genes_no_interactions.csv", row.names = FALSE)
+# write.csv(top_genes_B, "top_genes_with_interactions_main_effects.csv", row.names = FALSE)
+# write.csv(interaction_coeffs, "interaction_coefficients_all.csv", row.names = FALSE)
+# write.csv(round_metrics, "model_metrics_summary.csv", row.names = FALSE)
+```
+
+# Per‑gene Significant Regions (Top‑20 from Each Model)
+
+This section identifies, **for each of the top‑20 genes selected by the lasso models**, the brain **region(s)** where the gene’s expression is significantly associated with **AgeGroup (≥70 vs \<70)** **after adjusting** for technical covariates (`sex`, `lab`, `arrayversion`).
+
+**Method (per gene):** 1. For each brain region (ACG, DLPFC, Cerebellum), fit a **logistic regression** on the subset of samples from that region:\
+`AgeGroup ~ gene + covariates`\
+2. Extract the Wald p‑value for the `gene` coefficient, convert to **Odds Ratio (OR)** and **95% CI**.\
+3. **Adjust p‑values across regions (within gene)** using **Benjamini–Hochberg (BH)**; mark a region as significant if **q ≤ 0.05**.\
+4. Report detailed tables and compact summaries for both **Model A** and **Model B** top‑20 gene lists.
+
+```{r per_gene_region_helpers, message=FALSE, warning=FALSE}
+# --- helpers ---
+.fit_logit <- function(y, x, cov_df) {
+  df <- data.frame(y = as.integer(y), gene = as.numeric(x), cov_df, check.names = FALSE)
+  # drop zero-variance columns (can happen within a region)
+  keep <- vapply(df, function(v) length(unique(v)) > 1, logical(1))
+  df <- df[, keep, drop = FALSE]
+  if (!"gene" %in% names(df)) return(NULL)
+  rhs <- paste(setdiff(names(df), "y"), collapse = " + ")
+  fm  <- as.formula(paste("y ~", rhs))
+  fit <- try(glm(fm, data = df, family = binomial), silent = TRUE)
+  if (inherits(fit, "try-error")) return(NULL)
+  fit
+}
+
+find_sig_regions_for_genes <- function(expr_feat, meta, genes,
+                                       covariates = c("sex","lab","arrayversion"),
+                                       alpha = 0.05) {
+  covariates <- intersect(covariates, names(meta))
+  regions <- levels(na.omit(meta$region))
+  out <- list()
+  
+  for (g in genes) {
+    if (!g %in% colnames(expr_feat)) { warning("Probe not in expr_feat: ", g); next }
+    pvec <- rep(NA_real_, length(regions))
+    rows <- vector("list", length(regions))
+    for (i in seq_along(regions)) {
+      rg <- regions[i]; idx <- which(meta$region == rg)
+      if (length(idx) < 10) { rows[[i]] <- NULL; next }
+      fit <- .fit_logit(meta$AgeGroup[idx], expr_feat[idx, g],
+                        if (length(covariates)) meta[idx, covariates, drop = FALSE] else data.frame())
+      if (is.null(fit)) { rows[[i]] <- NULL; next }
+      sm <- summary(fit)$coefficients
+      if (!"gene" %in% rownames(sm)) { rows[[i]] <- NULL; next }
+      beta <- sm["gene","Estimate"]; se <- sm["gene","Std. Error"]
+      p    <- sm["gene","Pr(>|z|)"];  OR <- exp(beta)
+      rows[[i]] <- data.frame(ProbeID=g, Region=rg, Beta=beta, SE=se, p=p,
+                              OR=OR, OR_lo=exp(beta-1.96*se), OR_hi=exp(beta+1.96*se),
+                              Direction = ifelse(beta>0,"↑ in ≥70","↑ in <70"),
+                              stringsAsFactors=FALSE)
+      pvec[i] <- p
+    }
+    qvec <- p.adjust(pvec, method="BH")
+    for (i in seq_along(regions)) if (!is.null(rows[[i]])) rows[[i]]$q_BH <- qvec[i]
+    out <- c(out, rows)
+  }
+  
+  res <- do.call(rbind, out)
+  if (is.null(res)) return(res)
+  if (exists("genemeta")) {
+    res$Gene       <- unname(genemeta["sym", res$ProbeID])
+    res$Chromosome <- unname(genemeta["chrom", res$ProbeID])
+  }
+  res$Significant <- res$q_BH <= alpha
+  # reorder columns nicely
+  cols <- c("ProbeID","Gene","Chromosome","Region","Beta","SE","p","q_BH",
+            "OR","OR_lo","OR_hi","Direction","Significant")
+  cols <- intersect(cols, names(res))
+  res  <- res[, cols]
+  res[order(res$ProbeID, res$q_BH, res$p), ]
+}
+
+summarize_sig_regions <- function(tab) {
+  if (is.null(tab) || !nrow(tab)) return(tab)
+  agg <- aggregate(Region ~ ProbeID + Gene, data = subset(tab, Significant), 
+                   FUN = function(v) paste(unique(v), collapse = ", "))
+  names(agg)[3] <- "SignificantRegions(q<=0.05)"
+  agg[order(agg$ProbeID), ]
+}
+```
+
+```{r per_gene_region_run, message=FALSE, warning=FALSE}
+# --- choose the top‑20 lists from both models ---
+top20_A <- head(unique(top_genes_A$ProbeID), 20)
+top20_B <- head(unique(top_genes_B$ProbeID), 20)
+
+# --- run per‑gene region tests for each model's top‑20 ---
+sig_A <- find_sig_regions_for_genes(expr_feat, meta, top20_A,
+                                    covariates = c("sex","lab","arrayversion"), alpha = 0.05)
+sig_B <- find_sig_regions_for_genes(expr_feat, meta, top20_B,
+                                    covariates = c("sex","lab","arrayversion"), alpha = 0.05)
+
+cat("\\nSignificant regions (BH q<=0.05) — Model A top‑20:\\n")
+print(subset(sig_A, Significant), row.names = FALSE)
+
+cat("\\nSignificant regions (BH q<=0.05) — Model B top‑20:\\n")
+print(subset(sig_B, Significant), row.names = FALSE)
+
+# compact summaries
+summary_A <- summarize_sig_regions(sig_A)
+summary_B <- summarize_sig_regions(sig_B)
+
+cat("\\nSummary — Model A top‑20:\\n"); print(summary_A, row.names = FALSE)
+cat("\\nSummary — Model B top‑20:\\n"); print(summary_B, row.names = FALSE)
+
+# (Optional) write to CSV
+# write.csv(sig_A, "top20_modelA_region_tests.csv", row.names = FALSE)
+# write.csv(sig_B, "top20_modelB_region_tests.csv", row.names = FALSE)
+# write.csv(summary_A, "top20_modelA_region_summary.csv", row.names = FALSE)
+# write.csv(summary_B, "top20_modelB_region_summary.csv", row.names = FALSE)
+```
+
+```{r}
+sig_A <- sig_A[order(sig_A$p, na.last = TRUE), ]
+row.names(sig_A) <- NULL
+print(sig_A, row.names = FALSE)
+
+```
+
+```{r}
+sig_B <- sig_B[order(sig_B$p, na.last = TRUE), ]
+row.names(sig_B) <- NULL
+print(sig_B, row.names = FALSE)
+
+```
