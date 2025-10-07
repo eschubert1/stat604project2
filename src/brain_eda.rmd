@@ -10,6 +10,8 @@ knitr::opts_chunk$set(echo = TRUE, eval=FALSE)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
+library(kableExtra)
+library(pheatmap)
 ```
 
 ```{r, eval=T}
@@ -26,8 +28,7 @@ length(unique(arraymeta$patient))
 colMeans(arraymeta[2:7])
 
 # Histogram of ages (by observation)
-hist(arraymeta$age, main="Distribution of observation ages")
-
+hist(arraymeta$age, main="Distribution of observed ages", xlab="Age")
 patients = unique(arraymeta[,c("patient", "age", "sex")])
 hist(patients$age, main="Distribution of patient ages")
 
@@ -75,7 +76,10 @@ for(i in 2:4) {
   ix = which(arraymeta[,i] == 1)
   freq_table[i-1,] = colSums(arraymeta[ix, 5:7])
 }
-freq_table
+colnames(freq_table) = c("UC Davis", "UC Irvine", "U Mich")
+rownames(freq_table) = c("ANCG", "CB", "DLPFC")
+freq_table %>% kbl() %>%
+  kable_paper("hover", full_width = F)
 
 # Determine number of repeat observations per patient
 counts = vector(length=nrow(patients))
@@ -131,10 +135,10 @@ arraymeta %>%
 
 Some of the probesets are controls which detect bacterial (non-human) genes. A fixed amount of these bacterial genes are placed into each microarray, and so theoretically the brightness for these genes should be similar.  In reality, the mean brightness varies substantially across controls, as the side-by-side boxplots show.
 ```{r}
-# 1939 controls
-sum(is.na(genemeta["sym",]))
+# 62 controls
+sum(substr(colnames(genemeta),1,4)=="AFFX")
 
-ii = which(is.na(genemeta["sym",]))
+ii = which(substr(colnames(genemeta),1,4)=="AFFX")
 control_means = apply(expression[,ii], 2, mean)
 probeset_means = apply(expression[,-ii], 2, mean)
 
@@ -372,7 +376,7 @@ heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", la
 # Order expression by region
 ix = order(arraymeta$region.ancg, arraymeta$region.cb, arraymeta$region.dlpfc)
 region.symb = c(rep("D", 178), rep("C", 81), rep("A", 127))
-heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = region.symb)
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = region.symb, labCol= NA)
 
 # Order expression by arrayversion
 ix = sort(arraymeta$arrayversion, index.return = TRUE)$ix
@@ -385,13 +389,24 @@ ix = order(arraymeta$lab.davis, arraymeta$lab.irvine, arraymeta$lab.michigan,
 labregion.symb = c(rep("M+D", 84), rep("M+C", 18), rep("M+A", 61),
                    rep("I+D", 9), rep("I+C", 42), rep("I+A", 66),
                    rep("D+D", 85), rep("D+C", 21))
-heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = labregion.symb)
+
+exp_hmap = expression[ix,]
+eight_nums = (1:48)*8-7
+rn = rep("", nrow(exp_hmap))
+rn[eight_nums] = labregion.symb[eight_nums]
+rownames(exp_hmap) = rn
+
+colors = hcl.colors(7, palette = "RdYlBu", rev=T)
+
+pheatmap(mat = exp_hmap, color = colors, scale="column", cluster_rows=FALSE, cluster_cols=FALSE, show_rownames = TRUE, show_colnames=F)
+
+heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = labregion.symb, labCol=NA)
 ```
 
 Since there is expression data for each probeset, could we pivot the data set to be (386 x 22277) x 7, where the response variable is expression, and the dependent variables are probeset, patient, region, lab, age_group, sex, and arrayversion? Probeset effects would be considered fixed, while patient, region, lab, age_group, sex, and arrayversion could be random.
 
 Is there a way to do a simple t-test? For each probeset, split the data by age group and the compute 2 sample t statistics.
-```{r}
+```{r, eval=F}
 expression_t_test = function(data) {
   age_below70 = data %>% filter(above70 == 0)
   age_above70 = data %>% filter(above70 == 1)

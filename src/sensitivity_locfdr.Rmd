@@ -1,0 +1,272 @@
+---
+title: "STATS 604 Sensitivity Analysis"
+author: "Ethan Schubert"
+date: "2025-10-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(locfdr)
+library(kableExtra)
+library(webshot2) # For saving formatted kable
+library(magick)
+library(pheatmap)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=T}
+# Load the data
+load("../data/brain.rda")
+```
+
+Next, we repeat the previous analysis with above65 as the age group.
+```{r, eval = F}
+lm_coefs = list()
+lm_vcovs = list()
+expression_array = arraymeta %>% mutate(above65 = (age >= 65), arrayversion = factor(arrayversion)) %>% 
+  cbind(expression_standardized) %>% 
+  pivot_longer(c(region.ancg, region.cb, region.dlpfc), names_to = "region.name", values_to = "region.indicator") %>% 
+  filter(region.indicator == 1) %>% 
+  mutate(region.name = factor(region.name)) %>% 
+  pivot_longer(c(lab.davis, lab.irvine, lab.michigan), names_to = "lab.name", values_to = "lab.indicator") %>% 
+  filter(lab.indicator == 1) %>% 
+  select(-c(region.indicator, lab.indicator))
+
+#covariates =  c("above70*region.name", "lab.name", "(1 | patient)")
+covariates = c("above65*region.name", "lab.name", "sex", "arrayversion")
+for(i in 1:ncol(expression)) {
+  probeset = colnames(expression)[i]
+  fm = reformulate(covariates, response = as.name(probeset))
+  #m1 = lmer(fm, data=expression_array)
+  m1 = lm(fm, data=expression_array)
+  #lm_coefs[[i]] = fixef(m1)
+  lm_coefs[[i]] = coef(m1)
+  lm_vcovs[[i]] = vcov(m1)
+}
+
+# save(lm_coefs, lm_vcovs, file="../artifacts/lm_coefs_65.RData")
+```
+
+As before, we compute the z-values for each region, and perform local FDR analysis. 
+```{r}
+load(file="../artifacts/lm_coefs_65.RData")
+
+# Compute z values for differential expression by region.
+ancg.z = vector(length=ncol(expression))
+cb.z = vector(length = ncol(expression))
+dlpfc.z = vector(length = ncol(expression))
+
+ancg_ind = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 0)
+cb_ind = c(0, 1, 0, 0, 0, 0, 0, 0, 1, 0)
+dlpfc_ind = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)
+for(i in 1:ncol(expression)) {
+  betas = lm_coefs[[i]]
+  cv = lm_vcovs[[i]]
+  ancg_hat = betas%*%ancg_ind
+  cb_hat = betas%*%cb_ind
+  dlpfc_hat = betas%*%dlpfc_ind
+  ancg_se = c(sqrt(t(ancg_ind)%*%cv%*%ancg_ind)[1,1])
+  cb_se = c(sqrt(t(cb_ind)%*%cv%*%cb_ind)[1,1])
+  dlpfc_se = c(sqrt(t(dlpfc_ind)%*%cv%*%dlpfc_ind)[1,1])
+  ancg.z[i] = ancg_hat / ancg_se
+  cb.z[i] = cb_hat / cb_se
+  dlpfc.z[i] = dlpfc_hat / dlpfc_se
+}
+```
+
+Remove main effects of (intercept), region, lab, sex, and arrayversion for each expression
+```{r}
+expression_no_main = expression_standardized
+lab_mat = as.matrix(arraymeta[,6:7])
+region_mat = as.matrix(arraymeta[,3:4])
+gender_vec = arraymeta$sex=="M"
+version_vec = arraymeta$arrayversion == 2
+for(i in 1:ncol(expression_no_main)) {
+  intercept = c(lm_coefs[[i]][1])
+  regioncoefs = c(lm_coefs[[i]][3:4])
+  labcoefs = c(lm_coefs[[i]][5:6])
+  sexcoef = c(lm_coefs[[i]][7])
+  versioncoef = c(lm_coefs[[i]][8])
+  expression_no_main[,i] = expression_no_main[,i] - intercept - lab_mat%*%labcoefs -
+                          region_mat%*%regioncoefs - gender_vec*sexcoef - version_vec*versioncoef
+}
+
+```
+
+```{r, fig.show='hold', out.width="33%"}
+# Make heatmaps of expression data
+lab_region_heatmap = function(data, metadata, scale="none") {
+  ix = order(metadata$lab.davis, metadata$lab.irvine, metadata$lab.michigan, 
+           metadata$region.ancg, metadata$region.cb, metadata$region.dlpfc)
+  labregion.symb = c(rep("M+D", 84), rep("M+C", 18), rep("M+A", 61),
+                   rep("I+D", 9), rep("I+C", 42), rep("I+A", 66),
+                   rep("D+D", 85), rep("D+C", 21))
+  exp_hmap = data[ix,]
+  eight_nums = (1:48)*8-7
+  rn = rep("", nrow(exp_hmap))
+  rn[eight_nums] = labregion.symb[eight_nums]
+  rownames(exp_hmap) = rn
+  
+  colors = hcl.colors(7, palette = "RdYlBu", rev=T)
+  p = pheatmap(mat = exp_hmap, color = colors, scale=scale, cluster_rows=FALSE, cluster_cols=FALSE, show_rownames = TRUE, show_colnames=F)
+  p
+}
+
+lab_region_heatmap(expression_no_main, arraymeta, scale="none")
+lab_region_heatmap(expression_no_main, arraymeta, scale="row")
+lab_region_heatmap(expression_no_main, arraymeta, scale="column")
+```
+
+The QQ plots indicate that the right tail of z-values from the ANCG region still deviate from a Normal distribution, although less dramatically as before. In contrast to the preceding analysis, the z-values from the DLPFC region also slightly deviate on the tails. The z-values from the CB region still follow a Normal distribution quite closely.
+```{r, fig.show='hold', out.width="33%"}
+# Plot of z-values
+#hist(ancg.z)
+#hist(cb.z)
+#hist(dlpfc.z)
+
+qqnorm(ancg.z)
+qqline(ancg.z)
+
+qqnorm(cb.z)
+qqline(cb.z)
+
+qqnorm(dlpfc.z)
+qqline(dlpfc.z)
+```
+
+Show below are histograms of the z-values with (maximum-likelihood) estimated null densities shown in dashed blue lines and the estimated mixture densities shown with the green lines. For ANCG, the estimated null proportion is 0.996, 0.989 for CB, and 0.967 for DLPFC. The triangles mark the points where more extreme z-values correspond to local FDR of 0.2 or less.
+```{r, fig.show='hold', out.width="33%"}
+ancg.fdr = locfdr(ancg.z, nulltype=1, main="ANCG Z-values")
+cb.fdr = locfdr(cb.z, nulltype=1, main="CB Z-values")
+dlpfc.fdr = locfdr(dlpfc.z, nulltype=1, main="DLPFC Z-values")
+#all.fdr = locfdr(scale(c(ancg.z, cb.z, dlpfc.z))) # Low power
+```
+
+The expected false discovery rate for ANCG is 0.7637, 0.660 for CB, and 0.588 for DLPFC. All three are quite high, which indicates that this setup may have low power in detecting differential gene expression.
+```{r}
+ancg.fdr$Efdr
+cb.fdr$Efdr
+dlpfc.fdr$Efdr
+```
+
+Next, we plot the 'interesting' z-values (those with local FDR of 0.2 or less) against log local FDR along with the estimated standard errors. Note that log(0.2) = -1.609. For ANCG, the rightmost values have log local FDR below -1.609, but not as drastically as before. There are no DLPFC z-values whose log local FDR has a margin of error below -1.609. Furthermore, as shown earlier the estimated root mean square (column) correlation was high, so the estimated standard errors are likely too small. Hence, even the more extreme ANCG z-values may be unreliable.
+```{r, fig.show='hold', out.width="49%"}
+# Plot correlations of log(fdr)
+ii = which(!between(ancg.fdr$mat[,"x"], ancg.fdr$z.2[1], ancg.fdr$z.2[2]))
+plot(ancg.fdr$mat[,"x"],log(ancg.fdr$mat[,"fdr"]), type="l", ylim=c(-10, 0),
+     xlab = "ANCG z-values", ylab="log fdr", main="Local log FDR with standard errors")
+lines(ancg.fdr$mat[,"x"],log(ancg.fdr$mat[,"fdr"]) - 1.96*ancg.fdr$mat[,"lfdrse"], col='red')
+lines(ancg.fdr$mat[,"x"],log(ancg.fdr$mat[,"fdr"]) + 1.96*ancg.fdr$mat[,"lfdrse"], col='red')
+abline(h = -1.609, col='grey', lty="dashed")
+
+
+ii = which(!between(dlpfc.fdr$mat[,"x"], dlpfc.fdr$z.2[1], dlpfc.fdr$z.2[2]))
+plot(dlpfc.fdr$mat[,"x"],log(dlpfc.fdr$mat[,"fdr"]), type="l", ylim=c(-10, 0),
+     xlab = "DLPFC z-values", ylab="log fdr", main="Local log FDR with standard errors")
+lines(dlpfc.fdr$mat[,"x"],log(dlpfc.fdr$mat[,"fdr"]) - 1.96*dlpfc.fdr$mat[,"lfdrse"], col='red')
+lines(dlpfc.fdr$mat[,"x"],log(dlpfc.fdr$mat[,"fdr"]) + 1.96*dlpfc.fdr$mat[,"lfdrse"], col='red')
+abline(h = -1.609, col='grey', lty="dashed")
+```
+
+To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. There are 94 such probesets, 10 of which are controls. Although it may be surprising that this list included some controls, it is to be expected that some of the candidates correspond to false discoveries. After excluding these controls and taking the 20 genes corresponding to the lowest local FDR, we arrive at our final list.
+```{r}
+# Find bins with log fdr lower than log(0.25) for ANCG
+ix = which((log(ancg.fdr$mat[,2]))<log(0.25))
+lb = max(ancg.fdr$mat[ix,1][ancg.fdr$mat[ix,1] < 0])
+ub = min(ancg.fdr$mat[ix,1][ancg.fdr$mat[ix,1] > 0])
+
+# Find bins with log fdr lower than log(0.25) for DLPFC
+ix_d = which((log(dlpfc.fdr$mat[,2]))<log(0.25))
+lb_d = max(dlpfc.fdr$mat[ix_d,1][dlpfc.fdr$mat[ix_d,1] < 0])
+ub_d = min(dlpfc.fdr$mat[ix_d,1][dlpfc.fdr$mat[ix_d,1] > 0])
+
+# Number of genes outside lb and ub for ANCG
+sum(ancg.z < lb | ancg.z > ub)
+# Number of genes outside lb and ub for DLPFC
+sum(dlpfc.z < lb_d | dlpfc.z > ub_d)
+
+# Tentative list
+ii_ancg = which(ancg.z < lb | ancg.z > ub)
+ii_dlpfc = which(dlpfc.z < lb_d | dlpfc.z > ub_d)
+ii = c(ii_ancg, ii_dlpfc)
+interesting_probesets = colnames(expression)[ii]
+
+interesting_genes = genemeta[,interesting_probesets]
+
+# Number of interesting genes without gene information
+sum(is.na(interesting_genes[2,]))
+
+no_dups = !duplicated(interesting_genes[2,])
+# How many negative?
+sum(ancg.z[ii] < 0) # 2
+sum(dlpfc.z[ii] < 0) # 2
+
+# Take top 19 positive z-values and 1 negative
+#z20 = sort(c((abs(ancg.z[ii_ancg])), abs(dlpfc.z[ii_dlpfc]), decreasing=TRUE)[no_dups])[19]
+#ii_final = c(which(ancg.z >= z20), which(dlpfc.z >= z20), which(ancg.z==min(ancg.z[ii_ancg])), which(dlpfc.z==min(dlpfc.z[ii_dlpfc])))
+ii_final = ii
+
+final_probesets = colnames(expression)[ii_final]
+final_genes = genemeta[2,final_probesets]
+na_probesets = final_probesets[which(is.na(final_genes))]
+
+no_na = !is.na(final_genes)
+ii_final_nodups = ii_final[match(unique(final_genes[no_na]), final_genes)]
+ii_final_with_na = c(ii_final_nodups, match(na_probesets, colnames(expression)))
+
+ancg_genes = which(ii_final_with_na %in% ii_ancg)
+dlpfc_genes = which(ii_final_with_na %in% ii_dlpfc)
+regions = vector(length=length(ii_final_with_na))
+regions[ancg_genes] = "ANCG"
+regions[dlpfc_genes] = "DLPFC"
+
+zvals = vector(length=length(ii_final_with_na))
+zvals[ancg_genes] = ancg.z[ii_final_with_na[ancg_genes]]
+zvals[dlpfc_genes] = dlpfc.z[ii_final_with_na[dlpfc_genes]]
+
+fdrvals = vector(length=length(ii_final_with_na))
+fdrvals[ancg_genes] = ancg.fdr$fdr[ii_final_with_na[ancg_genes]]
+fdrvals[dlpfc_genes] = dlpfc.fdr$fdr[ii_final_with_na[dlpfc_genes]]
+
+final_list = data.frame(gene = genemeta[2, ii_final_with_na], 
+                        region = regions, z = zvals, 
+                        fdr = fdrvals)
+final_list = final_list[sort(final_list$fdr, index.return=TRUE)$ix,]
+final_list = cbind(rank=1:nrow(final_list),probeset=rownames(final_list), final_list)
+rownames(final_list) = NULL
+final_list[1:20,]
+```
+
+
+```{r}
+# Compare final list between analyses with different cutoffs
+
+final_comparison = cbind(final_list_table[1:20,], final_list[1:20,])
+# Drop duplicate rank column
+final_comparison = final_comparison[,-7]
+
+# Format cells
+final_comparison[c(1,2,12), 3] = 
+  cell_spec(final_comparison[c(1,2,12), 3],
+      background = "palegreen", format="html")
+final_comparison[c(9,17,18), 8] = 
+  cell_spec(final_comparison[c(9,17,18), 8],
+      background = "palegreen", format="html")
+final_comparison[11, 3] = cell_spec(final_comparison[11,3],
+      background = "pink", format="html")
+final_comparison[c(2, 6, 10), 8] = cell_spec(final_comparison[c(2,6,10),8],
+      background = "pink", format="html")
+
+# Update column names
+colnames(final_comparison) = c("rank", 
+      rep(c("probeset", "gene", "region", "z", "fdr"), 2))
+
+final_comparison %>%
+      kable(format = "html", booktabs = TRUE, escape = FALSE) %>% 
+      column_spec(6, border_right = TRUE) %>% 
+      kable_styling(font_size = 12, bootstrap_options="condensed")
+```
+
