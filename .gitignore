@@ -9,3 +9,15 @@
 
 # Ignore artifacts folder
 artifacts
+
+# Ignore .DS_Store
+.DS_Store
+
+# Ignore csv files
+*.csv
+
+# Ignore pdfs
+*.pdf
+
+# Ignore images
+images
