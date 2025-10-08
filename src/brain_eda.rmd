@@ -5,7 +5,7 @@ date: "2025-09-19"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, eval=TRUE)
 library(dplyr)
 library(tidyr)

@@ -22,7 +22,7 @@ This notebook performs exploratory data analysis (EDA) for the brain microarray 
 
 # Setup
 
-```{r setup, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 # Palettes (no external dependency)
 library(RColorBrewer)
 library(tidyverse); library(matrixStats); library(pheatmap)
@@ -37,9 +37,9 @@ par(mar = c(4,4,2,1))
 
 # Load and Split Data
 
-```{r load_data}
+```{r}
 # Load R data objects (arraymeta, expression, genemeta)
-load("brain.rda")
+load("../data/brain.rda")
 
 # Combine metadata and expression
 expr_df <- as.data.frame(expression)
@@ -64,7 +64,7 @@ dim(feature_data)
 
 # Build Metadata and Matrices
 
-```{r build_meta_mats}
+```{r}
 # Columns per data split
 meta_cols <- colnames(arraymeta)
 expr_cols_control <- setdiff(colnames(control_data), meta_cols)
@@ -92,7 +92,7 @@ stopifnot(nrow(expr_ctrl) == nrow(meta), nrow(expr_feat) == nrow(meta))
 
 # Helper Functions
 
-```{r helpers}
+```{r}
 # Heatmap ordered by Lab -> Region -> Age
 plot_cor_heatmap <- function(expr_mat,
                              meta,
@@ -172,7 +172,7 @@ age_cor_hist <- function(expr_mat, title="Gene–age correlations") {
 
 # Control Probes: QC & Batch Diagnostics
 
-```{r control_qc, fig.width=10, fig.height=6}
+```{r, fig.width=10, fig.height=6}
 # Per-sample distributions
 boxplot(data.frame(expr_ctrl), outline=FALSE,
         main="Control probes: per-sample distributions",
@@ -198,7 +198,7 @@ par(mfrow = c(1, 1))
 
 # Feature Probes: QC & Exploration
 
-```{r feature_qc, fig.width=10, fig.height=6}
+```{r, fig.width=10, fig.height=6}
 # Per-sample distributions (transpose so each box is a sample)
 boxplot(as.data.frame(t(expr_feat)),
         outline = FALSE, xaxt = "n",
@@ -220,7 +220,7 @@ r_feat <- age_cor_hist(expr_feat, title="Features: gene–age correlations")
 
 # Region-specific PCA (Optional)
 
-```{r region_pca, fig.width=10, fig.height=6}
+```{r, fig.width=10, fig.height=6}
 for (rg in levels(na.omit(meta$region))) {
   idx <- which(meta$region == rg)
   if (length(idx) >= 5) {
@@ -232,7 +232,7 @@ for (rg in levels(na.omit(meta$region))) {
 
 # Group Difference vs Variability
 
-```{r diff_vs_var, fig.width=7, fig.height=6}
+```{r, fig.width=7, fig.height=6}
 grp <- meta$age_group
 m_under <- colMeans(expr_feat[grp=="under70", , drop=FALSE], na.rm=TRUE)
 m_70    <- colMeans(expr_feat[grp=="70plus",  , drop=FALSE], na.rm=TRUE)
@@ -246,14 +246,14 @@ plot(delta, sd_pool, pch=16, cex=.5, col="#00000040",
 
 # Optional: ComBat (sva)
 
-```{r combat_install, eval=FALSE}
+```{r, eval=FALSE}
 # Install Bioconductor and sva if needed
 # if (!requireNamespace("BiocManager", quietly = TRUE))
 #   install.packages("BiocManager")
 # BiocManager::install("sva")
 ```
 
-```{r combat_preview, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 if (requireNamespace("sva", quietly = TRUE)) {
   library(sva)
   mod   <- model.matrix(~ age + region, data = meta)

@@ -9,7 +9,7 @@ output:
 editor_options:
   chunk_output_type: console
 params:
-  data_path: "data/brain.rda"   # Or set to "brain.rda"
+  data_path: "../data/brain.rda"   # Or set to "brain.rda"
   do_combat: TRUE             # Whether to perform ComBat batch correction
   n_top: 20                     # Number of “candidate” genes to select
   caliper: 0.2                  # Matching caliper (units: SD of PS logit)

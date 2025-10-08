@@ -25,7 +25,7 @@ It also reports **AUROC, Accuracy, Sensitivity, Specificity**, and prints **top 
 
 # Setup & Packages
 
-```{r setup, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 if (!requireNamespace("glmnet", quietly = TRUE)) install.packages("glmnet")
 if (!requireNamespace("pROC", quietly = TRUE))   install.packages("pROC")
 if (!requireNamespace("Matrix", quietly = TRUE)) install.packages("Matrix")
@@ -90,8 +90,8 @@ eval_model <- function(model_name, y_true, prob) {
 
 # Load Data and Build Control/Feature Sets
 
-```{r load_data}
-load("brain.rda")
+```{r}
+load("../data/brain.rda")
 
 expr_df <- as.data.frame(expression)
 combined <- cbind(arraymeta, expr_df)
@@ -110,7 +110,7 @@ dim(control_data); dim(feature_data)
 
 # Metadata and Expression Matrices
 
-```{r meta_and_mats}
+```{r}
 # Separate expression columns
 expr_cols_control <- setdiff(colnames(control_data), meta_cols)
 expr_cols_feature <- setdiff(colnames(feature_data), meta_cols)
@@ -138,7 +138,7 @@ y <- meta$AgeGroup
 
 # Common Preprocessing
 
-```{r preprocessing}
+```{r}
 # === Preprocessing (keep ALL genes) ===
 # Do NOT filter/limit by variance; keep every gene in expr_feat
 X_genes_noint <- expr_feat                      # samples × ALL genes
@@ -154,7 +154,7 @@ idx_te <- setdiff(seq_len(n), idx_tr)
 
 # Model A: Lasso Logistic (No Interactions)
 
-```{r model_A, message=FALSE}
+```{r, message=FALSE}
 X_A <- cbind(X_meta_noint, X_genes_noint)
 X_A_tr <- X_A[idx_tr, , drop = FALSE]; y_tr <- y[idx_tr]
 X_A_te <- X_A[idx_te, , drop = FALSE]; y_te <- y[idx_te]
@@ -172,7 +172,7 @@ metrics_A
 
 ## Top Gene Main-Effects — Model A
 
-```{r top_genes_A}
+```{r}
 coef_A <- as.matrix(coef(fit_A))[, 1]
 names(coef_A) <- rownames(coef(fit_A))
 top_genes_A <- make_gene_table(coef_A, colnames(X_genes_noint), genemeta,
@@ -182,7 +182,7 @@ top_genes_A
 
 # Model B: Lasso Logistic with Gene × Binary Interactions
 
-```{r model_B, message=FALSE}
+```{r, message=FALSE}
 # === Model B (with interactions) — use ALL genes ===
 # Sparse matrices for memory efficiency
 G  <- expr_feat                         # <-- keep ALL genes (no filtering)
@@ -246,7 +246,7 @@ metrics_B
 
 ## Top Gene Main-Effects — Model B
 
-```{r top_genes_B}
+```{r}
 coef_B <- as.matrix(coef(fit_B))[, 1]
 names(coef_B) <- rownames(coef(fit_B))
 top_genes_B <- make_gene_table(coef_B, colnames(Gs), genemeta,
@@ -256,7 +256,7 @@ top_genes_B
 
 ## (Optional) All Interaction Coefficients
 
-```{r interaction_table, eval=TRUE}
+```{r, eval=TRUE}
 # Extract all interaction-term coefficients (nonzero)
 is_int <- grepl(":I_", names(coef_B), fixed = TRUE)
 coef_int <- coef_B[is_int]
@@ -282,7 +282,7 @@ head(interaction_coeffs, 20)
 
 # Side-by-Side Metrics Summary
 
-```{r metrics_summary}
+```{r}
 metrics_table <- rbind(metrics_A, metrics_B)
 metrics_table
 
@@ -299,7 +299,7 @@ round_metrics
 
 # (Optional) Save Outputs
 
-```{r save_csvs, eval=FALSE}
+```{r, eval=FALSE}
 # write.csv(top_genes_A, "top_genes_no_interactions.csv", row.names = FALSE)
 # write.csv(top_genes_B, "top_genes_with_interactions_main_effects.csv", row.names = FALSE)
 # write.csv(interaction_coeffs, "interaction_coefficients_all.csv", row.names = FALSE)
@@ -316,7 +316,7 @@ This section identifies, **for each of the top‑20 genes selected by the lasso 
 3. **Adjust p‑values across regions (within gene)** using **Benjamini–Hochberg (BH)**; mark a region as significant if **q ≤ 0.05**.\
 4. Report detailed tables and compact summaries for both **Model A** and **Model B** top‑20 gene lists.
 
-```{r per_gene_region_helpers, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 # --- helpers ---
 .fit_logit <- function(y, x, cov_df) {
   df <- data.frame(y = as.integer(y), gene = as.numeric(x), cov_df, check.names = FALSE)
@@ -387,7 +387,7 @@ summarize_sig_regions <- function(tab) {
 }
 ```
 
-```{r per_gene_region_run, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 # --- choose the top‑20 lists from both models ---
 top20_A <- head(unique(top_genes_A$ProbeID), 20)
 top20_B <- head(unique(top_genes_B$ProbeID), 20)

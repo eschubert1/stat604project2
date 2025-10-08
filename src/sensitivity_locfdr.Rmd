@@ -5,7 +5,7 @@ date: "2025-10-07"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r, include=FALSE}
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -23,6 +23,7 @@ load("../data/brain.rda")
 ```
 
 As a robustness check on our analysis, we repeat the previous analysis with a new cutoff at age 65 (instead of 70) to determine the age groups.
+
 ```{r, eval = F}
 lm_coefs = list()
 lm_vcovs = list()
@@ -118,6 +119,7 @@ lab_region_heatmap(expression_no_main, arraymeta, scale="column")
 ```
 
 As before, we compute the z-values for each region, and perform local FDR analysis. The QQ plots indicate that the right tail of z-values from the ANCG region still deviate from a Normal distribution, although less dramatically as before. In contrast to the preceding analysis, the z-values from the DLPFC region also slightly deviate on the tails. The z-values from the CB region still follow a Normal distribution quite closely.
+
 ```{r, fig.show='hold', out.width="33%"}
 # Plot of z-values
 #hist(ancg.z)
@@ -135,6 +137,7 @@ qqline(dlpfc.z)
 ```
 
 Show below are histograms of the z-values with (maximum-likelihood) estimated null densities shown in dashed blue lines and the estimated mixture densities shown with the green lines. For ANCG, the estimated null proportion is 0.996, 0.989 for CB, and 0.967 for DLPFC. The triangles mark the points where more extreme z-values correspond to local FDR of 0.2 or less.
+
 ```{r, fig.show='hold', out.width="33%"}
 ancg.fdr = locfdr(ancg.z, nulltype=1, main="ANCG Z-values")
 cb.fdr = locfdr(cb.z, nulltype=1, main="CB Z-values")
@@ -143,6 +146,7 @@ dlpfc.fdr = locfdr(dlpfc.z, nulltype=1, main="DLPFC Z-values")
 ```
 
 The expected false discovery rate for ANCG is 0.7637, 0.660 for CB, and 0.588 for DLPFC. All three are quite high, which indicates that this setup may have low power in detecting differential gene expression.
+
 ```{r}
 ancg.fdr$Efdr
 cb.fdr$Efdr
@@ -150,6 +154,7 @@ dlpfc.fdr$Efdr
 ```
 
 Once again plotting the log FDR values, we find that for ANCG, the rightmost values have log local FDR below -1.609, but not as drastically as before. There are no DLPFC z-values whose log local FDR has a margin of error below -1.609.
+
 ```{r, fig.show='hold', out.width="49%"}
 # Plot correlations of log(fdr)
 ii = which(!between(ancg.fdr$mat[,"x"], ancg.fdr$z.2[1], ancg.fdr$z.2[2]))
@@ -238,7 +243,8 @@ rownames(final_list) = NULL
 
 To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. There are 94 such probesets, 10 of which are controls. Although it may be surprising that this list included some controls, it is to be expected that some of the candidates correspond to false discoveries. After excluding these controls and taking the 20 genes corresponding to the lowest local FDR, we arrive at our final list.
 
-We again choose the 20 most promising genes from the local FDR analysis, and compare them with the previous list. We find that the results change dramatically, with only 3 genes (15%) remaining from the original list. The estimated local FDRs are also substantially larger than they were in the previous list, indicating greater uncertainty. 
+We again choose the 20 most promising genes from the local FDR analysis, and compare them with the previous list. We find that the results change dramatically, with only 3 genes (15%) remaining from the original list. The estimated local FDRs are also substantially larger than they were in the previous list, indicating greater uncertainty.
+
 ```{r}
 # Compare final list between analyses with different cutoffs
 
@@ -269,6 +275,7 @@ final_comparison %>%
 ```
 
 We can also directly examine the updated z-scores and local FDRs for all 20 genes from the original list. Most of the genes have very large local FDR (higher than 0.5) when the age cutoff is adjusted to 65.
+
 ```{r}
 # Make new table of original list + updated z and fdr values
 ix = which(colnames(expression) %in% final_list_table$probeset[1:20])
