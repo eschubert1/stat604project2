@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE, eval=T)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -14,6 +14,7 @@ library(locfdr)
 library(kableExtra)
 library(webshot2) # For saving formatted kable
 library(magick)
+library(pheatmap)
 ```
 
 ```{r, eval=T}
@@ -28,7 +29,8 @@ Our quantity of interest can then be estimated by: $\hat{\beta}_1 + \hat{\beta}_
 $$
 \hat{E}[Y^j(1) - Y^j(0)| region = r] = \hat{\beta}_1 + \hat{\beta}_{3r}
 $$
-First, we standardize the data by rows and columns of the expression data to account for natural differences in probeset 'stickiness' and differences due to experimental variability in the microarrays. First the columns (probesets) are standardized, then the rows (micoarrays) successively for 5 iterations.
+First, we standardize the data by rows and columns of the expression data to account for inherent differences in probeset brightness and differences due to experimental variability in the microarrays. First the columns (probesets) are standardized, then the rows (micoarrays) successively for 5 iterations.
+
 ```{r}
 # Doubly-standardize expression data (rows and columns)
 expression_standardized = expression
@@ -38,27 +40,33 @@ for(i in 1:5) {
 }
 ```
 
-Next we plot the standardized expression values, sorted by region and lab. The first heatmap uses a common color scale for the whole array, while the second plot standardizes the colors by column and the third plot by rows.
+Next we plot the standardized expression values, sorted by region and lab. The first heatmap uses a common color scale for the whole array, while the second plot standardizes the colors by rows and the third plot by columns.
+
 ```{r, fig.show='hold', out.width="33%"}
-# Check values
-ix = order(arraymeta$lab.davis, arraymeta$lab.irvine, arraymeta$lab.michigan, 
-           arraymeta$region.ancg, arraymeta$region.cb, arraymeta$region.dlpfc)
-labregion.symb = c(rep("M+D", 84), rep("M+C", 18), rep("M+A", 61),
+# Make heatmaps of expression data
+lab_region_heatmap = function(data, metadata, scale="none") {
+  ix = order(metadata$lab.davis, metadata$lab.irvine, metadata$lab.michigan, 
+           metadata$region.ancg, metadata$region.cb, metadata$region.dlpfc)
+  labregion.symb = c(rep("M+D", 84), rep("M+C", 18), rep("M+A", 61),
                    rep("I+D", 9), rep("I+C", 42), rep("I+A", 66),
                    rep("D+D", 85), rep("D+C", 21))
+  exp_hmap = data[ix,]
+  eight_nums = (1:48)*8-7
+  rn = rep("", nrow(exp_hmap))
+  rn[eight_nums] = labregion.symb[eight_nums]
+  rownames(exp_hmap) = rn
+  
+  colors = hcl.colors(7, palette = "RdYlBu", rev=T)
+  p = pheatmap(mat = exp_hmap, color = colors, scale=scale, cluster_rows=FALSE, cluster_cols=FALSE, show_rownames = TRUE, show_colnames=F)
+  p
+}
 
-# No scale
-heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "none", labRow = labregion.symb)
-
-# Column scale
-heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "column", labRow = labregion.symb)
-
-# Row scale
-heatmap(expression[ix,], Rowv = NA, Colv = NA, revC = TRUE, scale = "row", labRow = labregion.symb)
+lab_region_heatmap(expression_standardized, arraymeta, scale="none")
+lab_region_heatmap(expression_standardized, arraymeta, scale="row")
+lab_region_heatmap(expression_standardized, arraymeta, scale="column")
 ```
 
-Next, we fit the linear models for each probeset and save the coefficient estimates and covariance estimates.
-```{r, eval = F}
+```{r, eval = F, echo=F}
 lm_coefs = list()
 lm_vcovs = list()
 expression_array = arraymeta %>% mutate(above70 = (age >= 70), arrayversion = factor(arrayversion)) %>% 
@@ -85,7 +93,6 @@ for(i in 1:ncol(expression)) {
 # save(lm_coefs, lm_vcovs, file="../artifacts/lm_coefs.RData")
 ```
 
-We then compute the z-values for each region, and perform local FDR analysis. 
 ```{r}
 load(file="../artifacts/lm_coefs.RData")
 
@@ -112,7 +119,6 @@ for(i in 1:ncol(expression)) {
 }
 ```
 
-Remove main effects of (intercept), region, lab, sex, and arrayversion for each expression
 ```{r}
 expression_no_main = expression_standardized
 lab_mat = as.matrix(arraymeta[,6:7])
@@ -128,8 +134,9 @@ for(i in 1:ncol(expression_no_main)) {
   expression_no_main[,i] = expression_no_main[,i] - intercept - lab_mat%*%labcoefs -
                           region_mat%*%regioncoefs - gender_vec*sexcoef - version_vec*versioncoef
 }
-
 ```
+
+After fitting the linear models for each probeset, we plot the expression heatmaps again after removing main effects of (intercept), region, lab, sex, and arrayversion for each expression. Notably, the banding pattern is much less prominent in the third heatmap.
 
 ```{r, fig.show='hold', out.width="33%"}
 # Make heatmaps of expression data
@@ -155,7 +162,8 @@ lab_region_heatmap(expression_no_main, arraymeta, scale="row")
 lab_region_heatmap(expression_no_main, arraymeta, scale="column")
 ```
 
-After fitting the models, we estimate the root mean square correlation between columns to be about 0.3, which is somewhat high. This correlation indicates that the later standard error calculations are likely biased downwards, and the true standard errors may be larger.
+We also estimate the root mean square correlation between columns to be about 0.3, which is somewhat high. This correlation indicates that the later standard error calculations are likely biased downwards, and the true standard errors may be larger.
+
 ```{r}
 # Track row and column dims
 n = nrow(expression_no_main)
@@ -178,7 +186,8 @@ alpha_hat = sqrt(n/(n-1)*(alpha_bar^2 - 1/(n-1)))
 Neff = N/(1+(N-1)*alpha_hat^2)
 ```
 
-The QQ plots indicate that the right tail of z-values from the ANCG region deviate from a Normal distribution, while the other regions follow a Normal distribution quite closely.
+After computing z-scores to estimate average differential expression, we constructed QQ plots of the z-scores. The QQ plots indicate that the right tail of z-values from the ANCG region deviate from a Normal distribution, while the other regions follow a Normal distribution quite closely.
+
 ```{r, fig.show='hold', out.width="33%"}
 # Plot of z-values
 #hist(ancg.z)
@@ -195,7 +204,8 @@ qqnorm(dlpfc.z)
 qqline(dlpfc.z)
 ```
 
-Show below are histograms of the z-values with (maximum-likelihood) estimated null densities shown in dashed blue lines and the estimated mixture densities shown with the green lines. For ANCG, the estimated null proportion is 0.982, 1 for CB, and 0.964 for DLPFC. The triangles mark the points where more extreme z-values correspond to local FDR of 0.2 or less.
+To better understand the deviations from the QQ plots, we conduct a local FDR analysis. This analysis estimates the false discovery rate for a neighborhood around each z-score, which allows us to better identify interesting genes, similar to multiple testing. Shown below are histograms of the z-values with (maximum-likelihood) estimated null densities shown in dashed blue lines and the estimated mixture densities shown with the green lines. For ANCG, the estimated null proportion is 0.982, 1 for CB, and 0.964 for DLPFC. The triangles mark the points where more extreme z-values correspond to local FDR of 0.2 or less.
+
 ```{r, fig.show='hold', out.width="33%"}
 ancg.fdr = locfdr(ancg.z, nulltype=1, main="ANCG Z-values")
 cb.fdr = locfdr(cb.z, nulltype=1, main="CB Z-values")
@@ -204,6 +214,7 @@ dlpfc.fdr = locfdr(dlpfc.z, nulltype=1, main="DLPFC Z-values")
 ```
 
 The expected false discovery rate for ANCG is 0.555, 0.459 for CB, and 0.573 for DLPFC. All three are quite high, which indicates that this setup may have low power in detecting differential gene expression.
+
 ```{r}
 ancg.fdr$Efdr
 cb.fdr$Efdr
@@ -211,6 +222,7 @@ dlpfc.fdr$Efdr
 ```
 
 Next, we plot the 'interesting' z-values (those with local FDR of 0.2 or less) against log local FDR along with the estimated standard errors. Note that log(0.2) = -1.609. For ANCG, the rightmost values have log local FDR well below -1.609, but the margin of error is considerably higher for CB. However, as shown earlier the estimated root mean square (column) correlation was high, so the estimated standard errors are likely too small. Hence, even the more extreme ANCG z-values may be unreliable.
+
 ```{r, fig.show='hold', out.width="49%"}
 # Plot correlations of log(fdr)
 ii = which(!between(ancg.fdr$mat[,"x"], ancg.fdr$z.2[1], ancg.fdr$z.2[2]))
@@ -230,14 +242,15 @@ abline(h = -1.609, col='grey', lty="dashed")
 ```
 
 To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. There are 94 such probesets, 10 of which are controls. Although it may be surprising that this list included some controls, it is to be expected that some of the candidates correspond to false discoveries. After excluding these controls and taking the 20 genes corresponding to the lowest local FDR, we arrive at our final list.
-```{r}
+
+```{r, warning=FALSE}
 # Compute bounds where standard error is lower than log(0.2)
 ix = which((log(ancg.fdr$mat[,2]) + 1.96*ancg.fdr$mat[,"lfdrse"])<log(0.2))
 lb = max(ancg.fdr$mat[ix,1][ancg.fdr$mat[ix,1] < 0])
 ub = min(ancg.fdr$mat[ix,1][ancg.fdr$mat[ix,1] > 0])
 
 # Number of genes outside lb and ub
-sum(ancg.z < lb | ancg.z > ub)
+#sum(ancg.z < lb | ancg.z > ub)
 # Tentative list
 ii = which(ancg.z < lb | ancg.z > ub)
 interesting_probesets = colnames(expression)[ii]
@@ -245,11 +258,11 @@ interesting_probesets = colnames(expression)[ii]
 interesting_genes = genemeta[,interesting_probesets]
 
 # Number of interesting genes without gene information
-sum(is.na(interesting_genes[2,]))
+#sum(is.na(interesting_genes[2,]))
 
 no_dups = !duplicated(interesting_genes[2,])
 # How many negative?
-sum(ancg.z[ii] < 0) # 1
+#sum(ancg.z[ii] < 0) # 1
 
 # Take top 19 positive z-values and 1 negative
 z20 = sort((abs(ancg.z[ii]))[no_dups], decreasing=TRUE)[19]
@@ -270,7 +283,7 @@ final_list = data.frame(gene = genemeta[2, ii_final_with_na],
 final_list = final_list[sort(final_list$fdr, index.return=TRUE)$ix,]
 final_list = cbind(rank=1:nrow(final_list),probeset=rownames(final_list), final_list)
 rownames(final_list) = NULL
-final_list[1:20,]
+#final_list[1:20,]
 ```
 
 ```{r, fig.show='hold'}
