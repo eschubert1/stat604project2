@@ -13,11 +13,12 @@ params:
   do_combat: TRUE             # Whether to perform ComBat batch correction
   n_top: 20                     # Number of “candidate” genes to select
   caliper: 0.2                  # Matching caliper (units: SD of PS logit)
+  age_thre: 70
 ---
 ```{r}
 set.seed(20240924)
 options(stringsAsFactors = FALSE)
-
+age_thre = 70
 # Install/load packages
 if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(
@@ -54,8 +55,8 @@ meta_raw <- as_tibble(arraymeta) %>%
            lab.michigan == 1 ~ "Michigan",
            TRUE ~ NA_character_
          ),
-         age70   = if_else(age >= 70, 1L, 0L),
-         age_grp = if_else(age >= 70, ">=70", "<70"))
+         age70   = if_else(age >= age_thre, 1L, 0L),
+         age_grp = if_else(age >= age_thre, ">=age_thre", "<age_thre"))
 
 # Composite key: patient × region × lab × array version
 meta_raw <- meta_raw %>%
@@ -94,28 +95,73 @@ stopifnot(identical(meta_collapsed$cluster_id, rownames(expr_collapsed)))
 
 probe_ids <- colnames(expr_collapsed)
 
-# Align gene annotation with expression matrix
-common_ids <- intersect(probe_ids, colnames(genemeta))
+# # Align gene annotation with expression matrix
+# common_ids <- intersect(probe_ids, colnames(genemeta))
+# 
+# expr_use   <- expr_collapsed[, common_ids, drop = FALSE]
+# chrom_vec  <- genemeta["chrom", common_ids]
+# sym_vec    <- genemeta["sym", common_ids]
+# 
+# is_control <- grepl("^AFFX", common_ids, ignore.case = TRUE) | is.na(sym_vec)
+# 
+# expr_use <- expr_use[, !is_control, drop = FALSE]
+# 
+# gene_anno <- tibble(
+#   probe_id    = colnames(expr_use),
+#   gene_symbol = sym_vec[!is_control],
+#   chrom       = chrom_vec[!is_control]
+# )
+# cat("Number of samples (after collapsing):", nrow(expr_use),
+#     "; Number of genes (probes):", ncol(expr_use), "\n")
 
-expr_use   <- expr_collapsed[, common_ids, drop = FALSE]
-chrom_vec  <- genemeta["chrom", common_ids]
-sym_vec    <- genemeta["sym", common_ids]
+# ==== Collapse probes -> genes (replace your "Align gene annotation ..." block) ====
 
-is_control <- grepl("^AFFX", common_ids, ignore.case = TRUE) | is.na(sym_vec)
+# 对齐表达与注释
+common_ids <- intersect(colnames(expr_collapsed), colnames(genemeta))
+expr_use_probe <- expr_collapsed[, common_ids, drop = FALSE]
 
-expr_use <- expr_use[, !is_control, drop = FALSE]
+sym_vec   <- genemeta["sym",   common_ids]  # probe -> gene symbol
+chrom_vec <- genemeta["chrom", common_ids]
 
-gene_anno <- tibble(
-  probe_id    = colnames(expr_use),
-  gene_symbol = sym_vec[!is_control],
-  chrom       = chrom_vec[!is_control]
+# 去掉没有 symbol 或控制探针
+is_control <- grepl("^AFFX", common_ids, ignore.case = TRUE) | is.na(sym_vec) | sym_vec == ""
+expr_use_probe <- expr_use_probe[, !is_control, drop = FALSE]
+sym_vec   <- sym_vec[!is_control]
+chrom_vec <- chrom_vec[!is_control]
+
+# 分组：同一个 gene 的 probes 放一起
+probe_groups <- split(seq_along(sym_vec), sym_vec)  # names = gene_symbol
+
+# 折叠策略：对每个 gene，对所有 probe 的表达取“行中位数”（每个样本一行）
+expr_gene <- do.call(
+  cbind,
+  lapply(probe_groups, function(ix) {
+    matrixStats::rowMedians(as.matrix(expr_use_probe[, ix, drop = FALSE]), na.rm = TRUE)
+  })
 )
-cat("Number of samples (after collapsing):", nrow(expr_use),
-    "; Number of genes (probes):", ncol(expr_use), "\n")
+colnames(expr_gene) <- names(probe_groups)  # 列名就是 gene symbol
+# -> expr_gene: 样本 × 基因
+
+# 如果你需要一个 gene 注释表（比如染色体），挑该 gene 下“最常见”的 chrom
+gene_chrom <- vapply(probe_groups, function(ix) {
+  cx <- chrom_vec[ix]; cx <- cx[!is.na(cx) & nzchar(cx)]
+  if (length(cx) == 0) NA_character_ else names(sort(table(cx), decreasing = TRUE))[1]
+}, FUN.VALUE = character(1))
+
+gene_anno <- tibble::tibble(
+  gene_symbol = names(probe_groups),
+  chrom = unname(gene_chrom)
+)
+
+# 用 gene-level 矩阵覆盖后续流程所用的 expr_use
+expr_use <- expr_gene
+
+cat("Number of samples (after collapsing): ", nrow(expr_use),
+    "; Number of genes: ", ncol(expr_use), "\n", sep = "")
 ```
 matching and difference analysis
 ```{r}
-run_matching_for_region <- function(region_name, expr_mat, meta_df, caliper = 0.2, ratio = 1) {
+run_matching_for_region <- function(region_name, expr_mat, meta_df, caliper = 0.2, ratio = 2) {
   # Subset to the target region
   sel <- meta_df$region == region_name
   dat <- meta_df[sel, , drop = FALSE]
@@ -178,15 +224,24 @@ run_matching_for_region <- function(region_name, expr_mat, meta_df, caliper = 0.
   tstat <- mean_diff / (sd_diff / sqrt(npairs))
   pval  <- 2 * pt(-abs(tstat), df = max(npairs - 1, 1))
 
-  res <- tibble(
-    probe_id  = colnames(expr_m),
-    mean_diff = as.numeric(mean_diff),
-    t         = as.numeric(tstat),
-    p         = as.numeric(pval),
-    fdr       = p.adjust(pval, method = "BH"),
-    region    = region_name,
-    n_pairs   = npairs
-  )
+  # res <- tibble(
+  #   probe_id  = colnames(expr_m),
+  #   mean_diff = as.numeric(mean_diff),
+  #   t         = as.numeric(tstat),
+  #   p         = as.numeric(pval),
+  #   fdr       = p.adjust(pval, method = "BH"),
+  #   region    = region_name,
+  #   n_pairs   = npairs
+  # )
+  res <- tibble::tibble(
+    gene     = colnames(expr_m),         # <--- 用 gene 名称
+    mean_diff= as.numeric(mean_diff),
+    t        = as.numeric(tstat),
+    p        = as.numeric(pval),
+    fdr      = p.adjust(pval, method = "BH"),
+    region   = region_name,
+    n_pairs  = npairs
+    )
   list(region = region_name, m.out = m.out, md = md,
        expr_m = expr_m, pair_mat = pair_mat, stats = res)
 }
@@ -199,36 +254,54 @@ fits <- lapply(
   caliper = params$caliper
 )
 names(fits) <- regions
+# Combine region-wise results (gene-level already)
+res_all <- dplyr::bind_rows(lapply(fits, function(x) x$stats))
 
-# Combine region-wise results and attach gene annotations
-res_all <- bind_rows(lapply(fits, function(x) x$stats)) %>%
-  left_join(gene_anno, by = c("probe_id" = "probe_id")) %>%
-  relocate(gene_symbol, .after = probe_id)
-
-# For each gene, keep the region with the largest absolute effect size
+# 对每个 gene 选 |effect| 最大的 region
 res_best_by_gene <- res_all %>%
-  group_by(probe_id) %>%
-  slice_max(order_by = abs(mean_diff), n = 1, with_ties = FALSE) %>%
-  ungroup()
+  dplyr::group_by(gene) %>%
+  dplyr::slice_max(order_by = abs(mean_diff), n = 1, with_ties = FALSE) %>%
+  dplyr::ungroup()
 
-# Rank by |effect|, select top N, and label direction
+# 选 Top N
 topN <- res_best_by_gene %>%
-  arrange(desc(abs(mean_diff))) %>%
-  slice(1:params$n_top) %>%
-  mutate(
-    direction = if_else(mean_diff > 0, "Old Up (≥70 high)", "Old Down (≥70 low)"),
+  dplyr::arrange(dplyr::desc(abs(mean_diff))) %>%
+  dplyr::slice(1:params$n_top) %>%
+  dplyr::mutate(
+    direction = dplyr::if_else(mean_diff > 0, "Old Up (≥70 high)", "Old Down (≥70 low)"),
     abs_effect = abs(mean_diff)
   )
 
-# Save to CSV
 readr::write_csv(topN, "top20_genes_by_region.csv")
+# # Combine region-wise results and attach gene annotations
+# res_all <- bind_rows(lapply(fits, function(x) x$stats)) %>%
+#   left_join(gene_anno, by = c("probe_id" = "probe_id")) %>%
+#   relocate(gene_symbol, .after = probe_id)
+# 
+# # For each gene, keep the region with the largest absolute effect size
+# res_best_by_gene <- res_all %>%
+#   group_by(probe_id) %>%
+#   slice_max(order_by = abs(mean_diff), n = 1, with_ties = FALSE) %>%
+#   ungroup()
+# 
+# # Rank by |effect|, select top N, and label direction
+# topN <- res_best_by_gene %>%
+#   arrange(desc(abs(mean_diff))) %>%
+#   slice(1:params$n_top) %>%
+#   mutate(
+#     direction = if_else(mean_diff > 0, "Old Up (≥70 high)", "Old Down (≥70 low)"),
+#     abs_effect = abs(mean_diff)
+#   )
+# 
+# # Save to CSV
+# readr::write_csv(topN, "top20_genes_by_region.csv")
 ```
 Top-N potential list
 ```{r}
 topN %>%
-  transmute(
-    rank = row_number(),
-    probe_id, gene_symbol, region, n_pairs,
+  dplyr::transmute(
+    rank = dplyr::row_number(),
+    gene, region, n_pairs,
     mean_diff = round(mean_diff, 3),
     abs_effect = round(abs_effect, 3),
     p = signif(p, 3),
@@ -237,9 +310,25 @@ topN %>%
   ) %>%
   knitr::kable(
     align = "rllllrrrrl",
-    caption = "Top 20 candidate differential genes (ranked by |old−young|; best region is where the absolute effect is largest)"
+    caption = "Top 20 gene-level differences ..."
   ) %>%
   kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# topN %>%
+#   transmute(
+#     rank = row_number(),
+#     probe_id, gene_symbol, region, n_pairs,
+#     mean_diff = round(mean_diff, 3),
+#     abs_effect = round(abs_effect, 3),
+#     p = signif(p, 3),
+#     fdr = signif(fdr, 3),
+#     direction
+#   ) %>%
+#   knitr::kable(
+#     align = "rllllrrrrl",
+#     caption = "Top 20 candidate differential genes (ranked by |old−young|; best region is where the absolute effect is largest)"
+#   ) %>%
+#   kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 
 ```
 Visualizations
@@ -300,7 +389,7 @@ extract_pairs_by_region <- function(fit, region_name, expr_mat, meta_df) {
   md <- meta_df %>%
     filter(cluster_id %in% matched_ids) %>%
     mutate(
-      age_grp = factor(age_grp, levels = c("<70", ">=70"))
+      age_grp = factor(age_grp, levels = c("<age_thre", ">=age_thre"))
     )
 
   # For grouped display in heatmap: generate pair_block order following treat order;
@@ -330,13 +419,24 @@ pick_top_genes <- function(fit, n = 20, by = c("fdr", "abs_diff")) {
   by <- match.arg(by)
   st <- fit$stats
   if (by == "fdr") {
-    st %>% arrange(fdr, desc(abs(mean_diff))) %>%
-      slice_head(n = n) %>% pull(probe_id)
+    st %>% dplyr::arrange(fdr, dplyr::desc(abs(mean_diff))) %>%
+      dplyr::slice_head(n = n) %>% dplyr::pull(gene)
   } else {
-    st %>% arrange(desc(abs(mean_diff))) %>%
-      slice_head(n = n) %>% pull(probe_id)
+    st %>% dplyr::arrange(dplyr::desc(abs(mean_diff))) %>%
+      dplyr::slice_head(n = n) %>% dplyr::pull(gene)
   }
 }
+# pick_top_genes <- function(fit, n = 20, by = c("fdr", "abs_diff")) {
+#   by <- match.arg(by)
+#   st <- fit$stats
+#   if (by == "fdr") {
+#     st %>% arrange(fdr, desc(abs(mean_diff))) %>%
+#       slice_head(n = n) %>% pull(probe_id)
+#   } else {
+#     st %>% arrange(desc(abs(mean_diff))) %>%
+#       slice_head(n = n) %>% pull(probe_id)
+#   }
+# }
 
 # Heatmap: keep pair order (no clustering of samples)
 plot_heatmap_by_pair <- function(pairs_obj, top_genes, title = "Heatmap by Pairs") {
@@ -464,6 +564,50 @@ render_pair_views_for_region <- function(fit, region_name, expr_mat, meta_df,
 }
 
 
+# --- New: Heatmap with Younger on the left, Older on the right ---
+plot_heatmap_by_age <- function(pairs_obj, top_genes,
+                                title = "Heatmap (Younger left, Older right)") {
+  expr_m  <- pairs_obj$expr_m
+  md      <- pairs_obj$md
+
+  if (length(top_genes) == 0) {
+    message("No genes provided for heatmap.")
+    return(invisible(NULL))
+  }
+
+  # 确保年龄组顺序：<70 在左，>=70 在右
+  md$age_grp <- factor(md$age_grp, levels = c("<70", ">=70"))
+
+  # 列顺序：先按年龄组，再按 pair_block（这样同一对会靠在一起）
+  ord_col <- md %>%
+    arrange(age_grp, pair_block, cluster_id) %>%
+    pull(cluster_id)
+
+  # 只保留表达矩阵里存在的列
+  ord_col <- ord_col[ord_col %in% rownames(expr_m)]
+
+  expr_sub <- expr_m[ord_col, top_genes, drop = FALSE]
+  expr_z   <- t(scale(t(expr_sub)))
+
+  ann_col <- data.frame(
+    AgeGroup  = md$age_grp[match(ord_col, md$cluster_id)],
+    PairBlock = factor(md$pair_block[match(ord_col, md$cluster_id)])
+  )
+  rownames(ann_col) <- ord_col
+
+  p <- pheatmap::pheatmap(
+    t(expr_z),
+    cluster_rows   = TRUE,
+    cluster_cols   = FALSE,
+    annotation_col = ann_col,
+    show_colnames  = FALSE,
+    main           = title,
+    silent         = TRUE
+  )
+  grid::grid.newpage()
+  grid::grid.draw(p$gtable)
+  invisible(p)
+}
 ```
 
 ```{r}
@@ -472,32 +616,160 @@ render_pair_views_for_region <- function(fit, region_name, expr_mat, meta_df,
 # 1) Pre-check: by this stage you should already have fits / expr_use / meta_collapsed
 stopifnot(
   exists("fits"), exists("expr_use"), exists("meta_collapsed"),
-  !is.null(fits[["DLPFC"]]), !is.null(fits[["DLPFC"]]$stats)
+  !is.null(fits[["ANCg"]]), !is.null(fits[["ANCg"]]$stats)
 )
 
 # 2) Build the paired object
 pairs_obj <- extract_pairs_by_region(
-  fit = fits[["DLPFC"]],
-  region_name = "DLPFC",
+  fit = fits[["ANCg"]],
+  region_name = "ANCg",
   expr_mat = expr_use,
   meta_df  = meta_collapsed
 )
 
 # 3) Select top genes (by FDR or absolute effect size)
-tg <- pick_top_genes(fits[["DLPFC"]], n = 12, by = "fdr")
+tg <- pick_top_genes(fits[["ANCg"]], n = 20, by = "fdr")
 
 # 4) Heatmap (function already uses grid.draw internally)
-plot_heatmap_by_pair(pairs_obj, tg, title = "DLPFC: Top 12 by FDR (paired order)")
+plot_heatmap_by_pair(pairs_obj, tg, title = "ANCG: Top 12 by FDR (paired order)")
 
 # 5) Choose one gene for paired line plots and difference distributions
 g <- tg[1]
 
 # ggplot objects must be printed explicitly to show up in R Markdown
 print(plot_paired_lines(pairs_obj, gene = g,
-                        title = paste0("DLPFC: ", g, " (paired lines)")))
+                        title = paste0("ANCG: ", g, " (paired lines)")))
 print(plot_diff_distribution(pairs_obj, gene = g, mode = "per_pair",
-                             title = paste0("DLPFC: ", g, " diffs (per pair)")))
+                             title = paste0("ANCG: ", g, " diffs (per pair)")))
 print(plot_diff_distribution(pairs_obj, gene = g, mode = "per_treat_mean",
                              title = paste0("DLPFC: ", g, " diffs (per treat mean)")))
 ```
 
+```{r}
+# --- demo: render plots for a chosen region with a user-defined gene list ---
+
+# =============== USER CONFIG (easy to edit) ===============
+REGION   <- "ANCg"
+
+# 保存文件夹（不存在会自动创建）
+SAVE_DIR <- "65plots_ANCg"
+
+# 方式A：直接在此处列出目标基因
+GENE_SET <- c(
+  "MS4A6A","COL3A1","APLNR","HLA-DMA","CD74","HLA-DRA","HLA-DPA1",
+  "TPBG","WDR5B","FAM117A","SCPEP1","DHRS1","C7","ALDH1A2","FN1",
+  "MAMLD1","BAIAP3","NCAPD3","CAV1","SNED1"
+)
+
+# 方式B（可选）：从外部文本文件读取
+# GENE_SET <- scan("genes_to_plot.txt", what = "character", quiet = TRUE)
+# =========================================================
+
+# 确保保存目录存在
+if (!dir.exists(SAVE_DIR)) dir.create(SAVE_DIR, recursive = TRUE)
+
+# 1) Pre-check
+stopifnot(
+  exists("fits"), exists("expr_use"), exists("meta_collapsed"),
+  !is.null(fits[[REGION]]), !is.null(fits[[REGION]]$stats)
+)
+
+# 2) Build the paired object
+pairs_obj <- extract_pairs_by_region(
+  fit = fits[[REGION]],
+  region_name = REGION,
+  expr_mat = expr_use,
+  meta_df  = meta_collapsed
+)
+
+# 3) Sanity check gene list
+# 3) Sanity check gene list  —— 从列名里找
+genes_available <- colnames(expr_use)
+match_map   <- match(toupper(GENE_SET), toupper(genes_available))
+genes_found <- genes_available[stats::na.omit(match_map)]
+genes_missing <- GENE_SET[is.na(match_map)]
+
+# genes_available <- rownames(expr_use)
+# match_map <- match(toupper(GENE_SET), toupper(genes_available))
+# genes_found <- genes_available[na.omit(match_map)]
+# genes_missing <- GENE_SET[is.na(match_map)]
+
+if (length(genes_found) == 0) {
+  stop("None of the requested genes were found in the expression matrix.")
+}
+if (length(genes_missing) > 0) {
+  message("These genes were not found and will be skipped: ",
+          paste(genes_missing, collapse = ", "))
+}
+
+# 4) Heatmap for top genes
+genes_for_heatmap <- head(genes_found, 20)
+ht <- plot_heatmap_by_pair(
+  pairs_obj,
+  genes_for_heatmap,
+  title = paste0(REGION, ": Selected top ", length(genes_for_heatmap), " genes")
+)
+# 保存热图
+ggplot2::ggsave(
+  filename = file.path(SAVE_DIR, paste0(REGION, "_heatmap_top12.png")),
+  plot = ht, width = 8, height = 6, dpi = 300
+)
+
+# 5) For each gene, save paired line & diff plots
+for (g in genes_found) {
+  p1 <- plot_paired_lines(pairs_obj, gene = g,
+                          title = paste0(REGION, ": ", g, " (paired lines)"))
+  p2 <- plot_diff_distribution(pairs_obj, gene = g, mode = "per_pair",
+                               title = paste0(REGION, ": ", g, " diffs (per pair)"))
+  p3 <- plot_diff_distribution(pairs_obj, gene = g, mode = "per_treat_mean",
+                               title = paste0(REGION, ": ", g, " diffs (per treat mean)"))
+  
+  # 显示在 Rmd
+  print(p1); print(p2); print(p3)
+  
+  # 同时保存
+  ggsave(file.path(SAVE_DIR, paste0(REGION, "_", g, "_paired_lines.png")), p1,
+         width = 6, height = 4, dpi = 300)
+  ggsave(file.path(SAVE_DIR, paste0(REGION, "_", g, "_diffs_per_pair.png")), p2,
+         width = 6, height = 4, dpi = 300)
+  ggsave(file.path(SAVE_DIR, paste0(REGION, "_", g, "_diffs_per_treat_mean.png")), p3,
+         width = 6, height = 4, dpi = 300)
+}
+```
+
+```{r}
+# --- Global Top20 Genes by Different Ranking Criteria ---
+
+# 按 FDR
+top20_fdr <- res_best %>%
+  arrange(fdr, desc(abs(mean_diff))) %>%
+  slice_head(n = 20) %>%
+  mutate(rank = row_number(), criterion = "FDR")
+
+# 按 |mean_diff|
+top20_effect <- res_best %>%
+  arrange(desc(abs(mean_diff)), fdr) %>%
+  slice_head(n = 20) %>%
+  mutate(rank = row_number(), criterion = "Effect size")
+
+
+
+# 合并展示
+top20_all <- bind_rows(top20_fdr, top20_effect)
+
+top20_all %>%
+  transmute(
+    criterion, rank, gene, region,
+    mean_diff = round(mean_diff, 3),
+    p = signif(p, 3),
+    fdr = signif(fdr, 3),
+    direction = ifelse(mean_diff > 0, "Old Up", "Old Down")
+  ) %>%
+  knitr::kable(
+    caption = "Top 20 genes ranked separately by FDR, Effect size, and P-value"
+  ) %>%
+  kableExtra::kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+# 保存成 CSV
+readr::write_csv(top20_all, "top20_genes_three_rankings.csv")
+```
