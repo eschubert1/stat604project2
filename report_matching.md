@@ -67,50 +67,43 @@ Paired Comparison of Expression
 
 #### ANCg (example genes — CD74)
 
-Paired lines and per-pair differences for the representative gene `CD74`:
-
 ![ANCg — CD74 paired lines](figs/ANCg_CD74_paired_lines.png)
 
 _Analysis (paired lines)_: Each line connects matched samples (<70 vs ≥70). A consistent up/down slope across pairs indicates a coherent age-associated change; crossing or flat lines suggest heterogeneity or weak effects.
 
-![ANCg — CD74 differences per pair](figs/ANCg_CD74_diffs_per_pair.png)
+  ![ANCg — CD74 differences per pair](figs/ANCg_CD74_diffs_per_pair.png)
 
-_Analysis (pairwise differences)_: Distribution centered above/below zero indicates direction of the age effect; spread reflects variability across pairs. Narrow spread implies robust effect across matches.
+  _Analysis (pairwise differences)_: Distribution centered above/below zero indicates direction of the age effect; spread reflects variability across pairs. Narrow spread implies robust effect across matches.
 
-#### Region-level summaries
+  **Per-treatment mean for 1:2 matching**
 
-![DLPFC — paired line overview](figs/DLPFC-paired-line.png)
+  For each matched set i (one older: O_i; two younger: Y_{i1}, Y_{i2}), on the log-expression scale for gene g, define the per-set per-treatment mean difference as:
 
-_Analysis_: Global paired-line view across `DLPFC`. Coherent direction across many pairs supports region-level age effects; scattered or opposing trends suggest heterogeneity.
+  $$
+  d_{i,g} \,=\, \operatorname{Expr}_g(O_i) \, - \, \frac{\operatorname{Expr}_g(Y_{i1}) + \operatorname{Expr}_g(Y_{i2})}{2}.
+  $$
+
+  <!-- Average across the M matched sets within a region to obtain the gene-level summary:
+
+  $$
+  \bar d_g \,=\, \frac{1}{M} \sum_{i=1}^{M} d_{i,g}.
+  $$ -->
+
+  <!-- Intuition: first average the two younger expressions, then subtract this average from the older expression. The histogram shows the distribution of {d_{i,g}}; its center (positive/negative) indicates direction, and its spread indicates consistency across matched sets. -->
+
+  #### Region-level summaries
+
 
 ![DLPFC — paired heatmap](figs/DLPFC-paired-heatmap.png)
 
-_Analysis_: Heatmap highlights concordant up/down differences across pairs and genes. Block-like patterns indicate consistent signatures; noisy patterns imply modest effects.
-
-
-
 ![ANCg — top-genes heatmap](figs/ANCg_heatmap_top12.png)
-
-_Analysis_: Top `ANCg` genes post-matching. Consistent color direction across rows/columns indicates a robust age-associated signature in this region.
+_Analysis_: Top `DLPFC` and `ANCg` genes post-matching. Heatmap highlights concordant up/down differences across pairs and genes. Block-like patterns indicate consistent signatures; noisy patterns imply modest effects. 
 
 <!-- 
 ![ANCg — top 20 genes](src/plots_ANCg/ACNg_top20.png)
 
 _Analysis_: Ranked `ANCg` signals for broader context. Use alongside FDR-regression results to confirm agreement in both sign and magnitude. -->
 
-⸻
+## Analysis and Interpretation
 
-Interpretation
-	•	If regression results were reliable, matched-pair differences should display consistent directional trends (e.g., most pairs showing higher expression in the older group).
-	•	Indeed, the paired plots showed upward trends for several top candidate genes (such as those identified with low FDR values).
-	•	This agreement between regression and matching analyses supports the robustness of our findings.
-	•	Furthermore, these plots provide a more intuitive presentation for biological collaborators, demonstrating visible evidence of differential expression beyond model-based inference.
-
-⸻
-
-Summary
-	•	Matching type: Propensity score matching (1:2 nearest neighbor, within region)
-	•	Matched on: sex, lab, arrayversion
-	•	Purpose: Robustness check and interpretability enhancement
-	•	Validation outcome: Direction of gene expression differences consistent with regression results
-	•	Visualization: Balance plots, paired line plots, and histograms of matched-pair differences
+If regression results were reliable, matched-pair differences should display consistent directional trends (e.g., most pairs showing higher expression in the older group). Indeed, the paired plots showed upward trends for several top candidate genes (such as those identified with low FDR values). This agreement between regression and matching analyses supports the robustness of our findings. Furthermore, we include all the per treatment mean histogram plottings in the appendix as a reference for biological collaborators to check the results.
