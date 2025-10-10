@@ -1,0 +1,15 @@
+---
+output:
+  pdf_document:
+    toc: false
+    number_sections: false
+    latex_engine: xelatex
+fontsize: 11pt
+geometry: margin=1in
+---
+
+## Correlation Heatmap
+
+![Sample–sample correlation heatmap after removing AFFX controls](figs/cor_heatmap.png)
+
+We removed all control (AFFX) probes and computed the sample–sample Pearson correlation matrix on the remaining expression profiles using pairwise-complete observations. To reveal design-driven structure rather than clustering artifacts, samples were explicitly ordered by lab → region → age_group → patient, and the heatmap was rendered with identical row/column ordering, applying a sequential blue scale (lighter = lower correlation) and annotations bars with gap lines placed accordingly at factor boundaries. The map shows uniformly high correlations (predominantly 0.8–1.0) with pronounced block structure by lab and, secondarily, by region, indicating that center and tissue effects dominate between-sample variation. By comparison, age group does not produce comparable separation within lab×region strata, suggesting a subtler age signal. Narrow, pale vertical/horizontal bands suggest sample-specific departures (globally depressed correlation) deserving of QC/metadata checks. These patterns motivate explicit adjustment for lab and region and support using gene×region/lab interactions in models, explaining why age alone does not dominate the global covariance structure.
