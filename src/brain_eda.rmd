@@ -19,7 +19,7 @@ library(pheatmap)
 load("../data/brain.rda")
 ```
 
-Although the data consists of 386 tissue samples analyzed via microarrays, the samples only come from 86 patients.
+To begin our EDA, we examine the structure of the dataset. The brain tissue expression data consists of (log) expression observations on 22,277 probesets analyzed on 386 microarrays. However, although the data consists of 386 tissue samples analyzed via microarrays, the samples only come from 86 patients.
 ```{r, eval=F}
 # Number of patients
 length(unique(arraymeta$patient))
@@ -88,7 +88,7 @@ df.means %>% ggplot(aes(x = type, group = type, y = mean)) +
 
 We also visualize the expression level for all observations across all 22277 probesets. In the heatmap, each row represents a different observation and each column is a different probeset. The columns are standardized to account for inherent brightness differences between probesets. A clear banding pattern emerges across rows, which suggests that if a sample exhibits low (or high) expression for one probeset, the sample is likely to be consistently low (or high) for other probesets, relative to the other samples. Additionally, the rows are sorted by lab and region. Within some lab and region combinations, the expression levels appear to be either uniformly low or high. This could indicate the possible presence of lab or region effects.
 
-```{r, eval=T}
+```{r, eval=T, fig.align='center'}
 # Make heatmaps of expression data
 lab_region_heatmap = function(data, metadata, scale="none") {
   ix = order(metadata$lab.davis, metadata$lab.irvine, metadata$lab.michigan, 
@@ -110,3 +110,4 @@ lab_region_heatmap = function(data, metadata, scale="none") {
 lab_region_heatmap(expression, arraymeta, scale="column")
 ```
 
+We also examined the correlations of expression observations, after removing controls. The figure below shows a heatmap of these correlations, sorted by lab and region.

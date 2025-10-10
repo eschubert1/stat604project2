@@ -22,7 +22,7 @@ knitr::opts_chunk$set(echo = FALSE)
 load("../data/brain.rda")
 ```
 
-As a robustness check on our analysis, we repeat the previous analysis with a new cutoff at age 65 (instead of 70) to determine the age groups.
+Additionally, as a robustness check on our analysis, we repeat the previous analysis with a new cutoff at age 65 (instead of 70) to determine the age groups.
 
 ```{r, eval = F}
 lm_coefs = list()
@@ -173,7 +173,7 @@ lines(dlpfc.fdr$mat[,"x"],log(dlpfc.fdr$mat[,"fdr"]) + 1.96*dlpfc.fdr$mat[,"lfdr
 abline(h = -1.609, col='grey', lty="dashed")
 ```
 
-```{r}
+```{r, warning=FALSE}
 # Find bins with log fdr lower than log(0.25) for ANCG
 ix = which((log(ancg.fdr$mat[,2]))<log(0.25))
 lb = max(ancg.fdr$mat[ix,1][ancg.fdr$mat[ix,1] < 0])
@@ -185,9 +185,9 @@ lb_d = max(dlpfc.fdr$mat[ix_d,1][dlpfc.fdr$mat[ix_d,1] < 0])
 ub_d = min(dlpfc.fdr$mat[ix_d,1][dlpfc.fdr$mat[ix_d,1] > 0])
 
 # Number of genes outside lb and ub for ANCG
-sum(ancg.z < lb | ancg.z > ub)
+#sum(ancg.z < lb | ancg.z > ub)
 # Number of genes outside lb and ub for DLPFC
-sum(dlpfc.z < lb_d | dlpfc.z > ub_d)
+#sum(dlpfc.z < lb_d | dlpfc.z > ub_d)
 
 # Tentative list
 ii_ancg = which(ancg.z < lb | ancg.z > ub)
@@ -198,12 +198,12 @@ interesting_probesets = colnames(expression)[ii]
 interesting_genes = genemeta[,interesting_probesets]
 
 # Number of interesting genes without gene information
-sum(is.na(interesting_genes[2,]))
+#sum(is.na(interesting_genes[2,]))
 
 no_dups = !duplicated(interesting_genes[2,])
 # How many negative?
-sum(ancg.z[ii] < 0) # 2
-sum(dlpfc.z[ii] < 0) # 2
+#sum(ancg.z[ii] < 0) # 2
+#sum(dlpfc.z[ii] < 0) # 2
 
 # Take top 19 positive z-values and 1 negative
 #z20 = sort(c((abs(ancg.z[ii_ancg])), abs(dlpfc.z[ii_dlpfc]), decreasing=TRUE)[no_dups])[19]
@@ -241,9 +241,7 @@ rownames(final_list) = NULL
 #final_list[1:20,]
 ```
 
-To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. There are 94 such probesets, 10 of which are controls. Although it may be surprising that this list included some controls, it is to be expected that some of the candidates correspond to false discoveries. After excluding these controls and taking the 20 genes corresponding to the lowest local FDR, we arrive at our final list.
-
-We again choose the 20 most promising genes from the local FDR analysis, and compare them with the previous list. We find that the results change dramatically, with only 3 genes (15%) remaining from the original list. The estimated local FDRs are also substantially larger than they were in the previous list, indicating greater uncertainty.
+We again choose the 20 most promising genes from the local FDR analysis, and compare them with the previous list. We find that the results change dramatically, with only 3 genes (15%) remaining from the original list. These are highlighted in green in the table below. As before, highlighted in blue are genes which were also selected in the logistic regression, and highlighted in pink are probesets not associated with any gene. The estimated local FDRs are also substantially larger than they were in the previous list, indicating greater uncertainty.
 
 ```{r}
 # Compare final list between analyses with different cutoffs
@@ -259,8 +257,6 @@ final_comparison[c(1,2,12), 3] =
 final_comparison[c(9,17,18), 8] = 
   cell_spec(final_comparison[c(9,17,18), 8],
       background = "palegreen", format="html")
-final_comparison[11, 3] = cell_spec(final_comparison[11,3],
-      background = "pink", format="html")
 final_comparison[c(2, 6, 10), 8] = cell_spec(final_comparison[c(2,6,10),8],
       background = "pink", format="html")
 
@@ -289,8 +285,6 @@ final_updated = left_join(final_list_table[1:20,], updated_table, by="probeset")
 final_updated[c(1,2,12), 3] = 
   cell_spec(final_updated[c(1,2,12), 3],
       background = "palegreen", format="html")
-final_updated[11, 3] = cell_spec(final_updated[11,3],
-      background = "pink", format="html")
 
 final_updated %>%
       kable(format = "html", booktabs = TRUE, escape = FALSE) %>% 
@@ -298,3 +292,4 @@ final_updated %>%
       kable_styling(font_size = 12, bootstrap_options="condensed")
 ```
 
+This instability in the gene recommendations indicates that there may be unobserved confounding between the patients of 70 years and older and those between 65 and 70 years old. It is encouraging that three genes were selected in both analyses, but we would still recommend having low confidence in the results due to the instability.

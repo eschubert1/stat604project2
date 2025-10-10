@@ -11,11 +11,11 @@ fontsize: 11pt
 geometry: margin=1in
 ---
 
-# Age-Group Prediction Using Logistic Regression
+### Age-Group Prediction Using Logistic Regression
 
 We analyze brain microarray data to identify genes whose expression is associated with age group while accounting for brain region, lab, sex, and array version. We first use a **lasso‑penalized logistic regression with gene × design interactions** to select a small set of genes. From the resulting **top‑20** genes under two age cutoffs ($\geq 70$ vs $<70$, and $\geq 65$ vs $<65$), we then run **per‑gene, per‑region** logistic models with covariate adjustment and apply **Benjamini–Hochberg (BH)** correction across regions within each gene to identify significant regions. Only a very small overlap of genes is observed across cutoffs at the regional‑significance stage (notably **FN1**). This instability is expected in high‑dimensional settings and is explained below.
 
-## Stage 1: Penalized Logistic Regression with Interactions
+#### Stage 1: Penalized Logistic Regression with Interactions
 
 Let $Y_i \in \{0,1\}$ indicate whether subject $i$ is in the older group (per cutoff). Let $G_{ij}$ be expression of probe/gene $j$ for subject $i$. Let $\mathbf{Z}_i$ collect metadata main effects (dummies for region, lab, sex, array version). Let $\mathbf{B}_i$ be a vector of **six** selected binary indicators (from region/lab) to build interactions.
 
@@ -40,7 +40,7 @@ estimating parameters by maximizing the **lasso‑penalized** log‑likelihood
 
 The tuning parameter $\lambda$ is chosen by 5‑fold CV using the **1‑SE rule** for parsimony. This stage yields a ranked list of genes (main effects) and interactions. We keep the **top‑20 genes** by absolute coefficient magnitude for each cutoff for the confirmatory regional analysis in Stage 2.
 
-## Stage 2: Per‑Gene Regional Models with BH Correction
+#### Stage 2: Per‑Gene Regional Models with BH Correction
 
 For each selected gene $g$ and each brain region $r\in\{\text{ANCG},\text{DLPFC},\text{Cerebellum}\}$, we fit a **within‑region** covariate‑adjusted logistic model on samples from region $r$:
 
@@ -57,20 +57,20 @@ H_0:\, \beta_{gr}=0 \quad \text{vs}\quad H_1:\, \beta_{gr}\neq 0
 
 via a Wald test, obtaining a p‑value $p_{gr}$. For each **gene $g$**, we then correct across its regions using **Benjamini–Hochberg** on the vector $(p_{g,\text{ANCG}}, p_{g,\text{DLPFC}}, p_{g,\text{Cerebellum}})$ to produce **$q$‑values** $q_{gr}$, and we call region $r$ **significant** for gene $g$ if $q_{gr}\le 0.05$. 
 
-## Results
+#### Results
 
-### Discrimination (Stage 1, interaction model)
+##### Discrimination (Stage 1, interaction model)
 
 - Cutoff $\geq 70$ vs $<70$: **Test AUROC 0.984** (sensitivity 1.00, specificity 0.91).
 - Cutoff $\geq 65$ vs $<65$: **Test AUROC 0.963** (sensitivity 0.86, specificity 0.91).
 
 As expected, the stricter cutoff (70) separates classes slightly better.
 
-### Per‑gene significant regions (Stage 2)
+##### Per‑gene significant regions (Stage 2)
 
 **Interpretation:** Each row in the tables is a gene–region result from a within-region logistic model that adjusts for sex, lab, and array version; for each gene we test its coefficient separately in ANCG, DLPFC, and Cerebellum, then apply Benjamini–Hochberg (BH) correction within that gene across the three regions. The Beta column is the region-specific log-odds coefficient (conditional on covariates): Beta > 0 means higher expression is associated with greater odds of being in the older group in that region, while Beta < 0 means the opposite; SE is the standard error, p is the Wald p-value before correction, and q_BH is the BH-adjusted p-value. A gene can appear in multiple rows if more than one region remains significant after correction. In our results, for example, FN1 (211719_x_at) has positive Betas in DLPFC and ANCG, indicating relatively higher expression among the older group in those regions.
 
-#### Cutoff \( \geq 70 \) vs \( < 70 \) — Per-gene regional estimates for top-20 genes
+##### Cutoff \( \geq 70 \) vs \( < 70 \) — Per-gene regional estimates for top-20 genes
 
 | # | ProbeID      | Gene   | Chromosome | Region     | Beta   | SE     | p      | q_BH  |
 |---:|:------------|:-------|:-----------:|:-----------|-------:|-------:|-------:|------:|
@@ -97,7 +97,7 @@ As expected, the stricter cutoff (70) separates classes slightly better.
 
 
 
-#### Cutoff \( \geq 65 \) vs \( < 65 \) — Per-gene regional estimates for top-20 genes
+##### Cutoff \( \geq 65 \) vs \( < 65 \) — Per-gene regional estimates for top-20 genes
 
 | # | ProbeID      | Gene    | Chromosome | Region     | Beta   | SE     | p      | q_BH  |
 |---:|:------------|:--------|:-----------:|:-----------|-------:|-------:|-------:|------:|
@@ -123,19 +123,19 @@ As expected, the stricter cutoff (70) separates classes slightly better.
 | 20 | 211719_x_at | FN1     | 2           | Cerebellum | 0.58633 | 0.51022 | 0.25048 | 0.25048 |
 
 
-### Overlap across cutoffs (regional significance)
+###### Overlap across cutoffs (regional significance)
 
 - **Common gene(s):** **FN1 (211719_x_at)** appears in tables for both cutoffs (DLPFC and ANCG in both; Cerebellum additionally at $\geq 65$).  
 - **Most genes differ:** The remaining genes on each side are largely distinct, e.g., **CD74, GSTT1, COX7A1** are unique to $\geq 70$, whereas **LEPROT, POMZP3, GREM1, RFPL2, WIF1** appear only at $\geq 65$.
 
-## Interpretation and Reasons for Instability
+##### Interpretation and Reasons for Instability
 
 1. **Class boundary relabeling.** Moving the cutoff from 70 to 65 reassigns borderline subjects (65–69), altering group sizes and the composition of training/testing sets used in Stage 1; this will have effects on selections in Stage 2.
 2. **High‑dimensional feature correlation.** Many genes are correlated; the lasso can select different proxies under small perturbations (cutoff change), shifting which genes enter the top‑20 carried into Stage 2.
 3. **Contextual heterogeneity.** Region and lab effects are strong; their interactions change which gene–region combinations reach significance after BH correction.
 4. **Nonlinear aging signals.** Some expression changes may become magnified in later ages. Genes that differentiate between $\geq 70$ and $<70$ may not differentiate between $\geq 65$ and $<65$ if the effects are concentrated in the oldest group.
 
-## Key Takeaways
+##### Key Takeaways
 
 The interaction model performs well at both thresholds (AUROC higher at ≥70), but overlap across cutoffs is minimal—only **FN1** repeats (DLPFC, ANCG). This instability likely reflects boundary relabeling (65–69), correlated genes yielding alternate sparse solutions, region/lab heterogeneity, and nonlinear aging effects. Prioritize repeaters (e.g., FN1) for validation; and treat genes that appear only once as preliminary leads. For robustness, add stability selection/bootstrapping, and consider modeling age as continuous instead of hard cutoffs.
 

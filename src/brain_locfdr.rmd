@@ -40,7 +40,7 @@ for(i in 1:5) {
 }
 ```
 
-Next we plot the standardized expression values, sorted by region and lab. The first heatmap uses a common color scale for the whole array, while the second plot standardizes the colors by rows and the third plot by columns.
+Next we plot the standardized expression values, sorted by region and lab. The first heatmap uses a common color scale for the whole array, while the second plot standardizes the colors by rows and the third plot by columns. Notably, the banding pattern is much less prominent in the third heatmap.
 
 ```{r, fig.show='hold', out.width="33%"}
 # Make heatmaps of expression data
@@ -136,9 +136,7 @@ for(i in 1:ncol(expression_no_main)) {
 }
 ```
 
-After fitting the linear models for each probeset, we plot the expression heatmaps again after removing main effects of (intercept), region, lab, sex, and arrayversion for each expression. Notably, the banding pattern is much less prominent in the third heatmap.
-
-```{r, fig.show='hold', out.width="33%"}
+```{r, fig.show='hold', out.width="33%", eval=F}
 # Make heatmaps of expression data
 lab_region_heatmap = function(data, metadata, scale="none") {
   ix = order(metadata$lab.davis, metadata$lab.irvine, metadata$lab.michigan, 
@@ -160,11 +158,12 @@ lab_region_heatmap = function(data, metadata, scale="none") {
 lab_region_heatmap(expression_no_main, arraymeta, scale="none")
 lab_region_heatmap(expression_no_main, arraymeta, scale="row")
 lab_region_heatmap(expression_no_main, arraymeta, scale="column")
+
+#We also estimate the root mean square correlation between columns to be about 0.3, which is #somewhat high. This correlation indicates that the later standard error calculations are #likely biased downwards, and the true standard errors may be larger.
 ```
 
-We also estimate the root mean square correlation between columns to be about 0.3, which is somewhat high. This correlation indicates that the later standard error calculations are likely biased downwards, and the true standard errors may be larger.
 
-```{r}
+```{r, eval=F}
 # Track row and column dims
 n = nrow(expression_no_main)
 N = ncol(expression_no_main)
@@ -223,7 +222,7 @@ dlpfc.fdr$Efdr
 
 Next, we plot the 'interesting' z-values (those with local FDR of 0.2 or less) against log local FDR along with the estimated standard errors. Note that log(0.2) = -1.609. For ANCG, the rightmost values have log local FDR well below -1.609, but the margin of error is considerably higher for CB. However, as shown earlier the estimated root mean square (column) correlation was high, so the estimated standard errors are likely too small. Hence, even the more extreme ANCG z-values may be unreliable.
 
-```{r, fig.show='hold', out.width="49%"}
+```{r, fig.show='hold', out.width="49%", fig.align='center'}
 # Plot correlations of log(fdr)
 ii = which(!between(ancg.fdr$mat[,"x"], ancg.fdr$z.2[1], ancg.fdr$z.2[2]))
 plot(ancg.fdr$mat[,"x"],log(ancg.fdr$mat[,"fdr"]), type="l", ylim=c(-10, 0),
@@ -241,7 +240,7 @@ abline(h = -1.609, col='grey', lty="dashed")
 #abline(h = -1.609, col='grey', lty="dashed")
 ```
 
-To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. There are 94 such probesets, 10 of which are controls. Although it may be surprising that this list included some controls, it is to be expected that some of the candidates correspond to false discoveries. After excluding these controls and taking the 20 genes corresponding to the lowest local FDR, we arrive at our final list.
+To conclude, we construct a list of promising candidates for genes which are differentially expressed in the ANCG region of the brain, since this was the only region which had genes with low estimated local FDR. We construct this list by finding the genes corresponding to the lowest estimated local FDR from the right tail of the histogram. The final list is given in the table below. Highlighted in blue are the genes which were also selected in the logistic regression analysis. Highlighted in pink is a probeset which was not associated with any gene - this may be due to some probesets being found to be able to bind to multiple distinct genes, and thus should be regarded as a false discovery. Overall, the estimated local FDR is small for all the genes which is an encouraging result. However, this analysis also assumes the z-values are independent, which is unlikely to be true, so the standard errors associated with the local FDR estimates may be too small. Consequently, we suggest this list be regarded with a moderate level of confidence.
 
 ```{r, warning=FALSE}
 # Compute bounds where standard error is lower than log(0.2)
@@ -295,8 +294,10 @@ final_list_table[7:8, 3] = cell_spec(final_list_table[7:8,3],
 final_list_table[11, 3] = cell_spec(final_list_table[11,3],
       background = "pink", format="html")
 
-cbind(final_list_table[1:10,], final_list_table[11:20,])  %>%
+final_list_table  %>%
       kable(format = "html", booktabs = TRUE, escape = FALSE) %>% 
       kable_styling()
 
 ```
+
+To better understand the differential expression between age groups at these genes, we follow up these results with a matching analysis.

@@ -1,6 +1,6 @@
 ---
 title: "Differential Expression in the Brain"
-author: "Ethan Schubert"
+author: "Dhruba Nandi, Xiaoyu Qiu, Ethan Schubert"
 date: "2025-10-08"
 output: html_document
 
@@ -15,6 +15,7 @@ params:
 knitr::opts_chunk$set(echo = FALSE)
 library(dplyr)
 library(tidyr)
+library(knitr)
 library(ggplot2)
 library(pheatmap)
 library(locfdr)
@@ -29,55 +30,85 @@ library(pROC)
 library(Matrix)
 ```
 
-The purpose of this analysis was to identify a candidate list of 20 genes which show promising signs of differential expression in the brain between young (below 70) and old (70+) individuals. 
-We accounted for multiple testing in our analysis, and standard error calculations initially suggested we could regard the findings with a moderate degree of confidence. However, we found the findings to be unstable after slightly modifying the age cutoff (to 65). This instability is unlikely to be due to the change in age-groups alone, and hence we recommend the candidate list presented below to be understood with low confidence.
+The purpose of this analysis was to identify a candidate list of 20 genes which show promising signs of differential expression in the brain between young (below 70) and old (70+) individuals. We accounted for multiple testing in our analysis, and standard error calculations initially suggested we could regard the findings with a moderate degree of confidence. However, we found the findings to be unstable after slightly modifying the age cutoff (to 65). This instability is unlikely to be due to the change in age-groups alone, and hence we recommend the candidate list presented below to be understood with low confidence.
 
-#### Important Considerations from EDA
+### Important Considerations from EDA
 
 Before identifying differentially expressed genes, we conducted an exploratory data analysis to understand the structure of the dataset and potential sources of variation. The age distribution was highly unbalanced, with only about 13% of samples from individuals aged 70 or older. In addition, samples from the three brain regions were unevenly distributed across laboratories—most notably, UC Davis did not analyze any samples from the anterior cingulate cortex (ANCg).
 
+```{r, eval=T, fig.align='center', fig.cap="Number of samples by lab and region"}
+include_graphics("../images/region_lab_freqtable.png")
+```
+
 Heatmap visualizations of expression and covariance patterns revealed strong region-by-lab effects, suggesting that technical and experimental factors contributed substantial variation to the data. These findings underscore the importance of adjusting for metadata variables such as lab and region in the subsequent regression and matching analyses.
 
-#### Methods Overview
+```{r, eval=T, fig.align='center', fig.cap="Heatmap of log-expression values, scaled by columns. Each row is one sample, and each column is one probeset. Row are ordered by lab and region, where M,I,D correspond to the University of Michigan, UC Irvine, and UC Davis, and D, C, A correspond to regions DLPFC, CB, and ANCG"}
+include_graphics("../images/expression_heatmap.png")
+```
+
+```{r, eval=T, fig.align='center', fig.cap="Sample–sample correlation heatmap after removing AFFX controls"}
+include_graphics("../images/cor_heatmap.png")
+```
+
+
+### Methods Overview
 
 To identify age-associated differentially expressed genes, we combined model-based and matching-based approaches.
 
 - $\textbf{Logistic Regression:}$
-  We modeled the binary age group ($\geq$70 vs $<$ 70) as the response and included gene expression, region, lab, sex, and array version as predictors, allowing for gene-by-metadata interactions.
+  We modeled the binary age group ($\geq$ 70 vs $<$ 70) as the response and included gene expression, region, lab, sex, and array version as predictors, allowing for gene-by-metadata interactions.
 
--$\textbf{Linear Regression and Local FDR Analysis:}  $
-For each probeset, we fitted a linear model to estimate the age-related differential expression within each brain region while adjusting for main effects such as lab, sex, and array version.  
+- $\textbf{Linear Regression and Local FDR Analysis:}$
+For each probeset, we fit a linear model to estimate the age-related differential expression within each brain region while adjusting for main effects such as lab, sex, and array version.  
 The resulting $z$-statistics were then used as inputs to a local false discovery rate (local FDR) analysis, which accounts for multiple testing across thousands of genes and quantifies the reliability of each association.
 
-- $\textbf{Matching-Based Analysis:}  $
+- $\textbf{Matching-Based Analysis:}$
   Using 1:2 nearest-neighbor propensity score matching on covariates, we created age-balanced pairs within regions. This matching structure enabled pairwise comparisons and facilitated clear visualization of expression differences for communication.
 
-#### Results and Recommendations
-###### Main Findings
-Using logistic regression, we identified a subset of genes whose expression levels were significantly associated with the older age group ($\geq$70). Additionally, to directly estimate differential expression, we fit linear models for each expression and computed z-scores for the coefficients representing differential expression. To evaluate the reliability of these associations and account for multiple testing, we conducted a local false discovery rate (local FDR) analysis on these z-scores. The results showed that the anterior cingulate cortex (ANCg) exhibited the strongest and most reliable signal. Notably, several genes identified as significant in the regression analysis also appeared among those with low local FDR estimates, highlighting consistent findings across methods. Finally, matching-based validation confirmed that the direction of gene expression changes with age was consistent with the regression results, providing an intuitive and interpretable confirmation of our findings and facilitating clearer communication.
+### Results and Recommendations
+#### Main Findings
+Using logistic regression, we identified a subset of genes whose expression levels were significantly associated with the older age group ($\geq$ 70). Additionally, to directly estimate differential expression, we fit linear models for each expression and computed z-scores for the coefficients representing differential expression. To evaluate the reliability of these associations and account for multiple testing, we conducted a local false discovery rate (local FDR) analysis on these z-scores. The results showed that the anterior cingulate cortex (ANCg) exhibited the strongest and most reliable signal. Notably, several genes identified as significant in the regression analysis also appeared among those with low local FDR estimates, highlighting consistent findings across methods. Finally, matching-based validation confirmed that the direction of gene expression changes with age was consistent with the regression results, providing an intuitive and interpretable confirmation of our findings and facilitating clearer communication.
 
-###### Final Gene List Recommendations
+#### Final Gene List Recommendations
 All selected genes were associated with the ANCg region, and the estimated local FDRs were small for all 20 genes, which suggests a moderate level of confidence for the list. However, the last two columns of the table show that the z-scores and local FDRs change dramatically when the cutoff is changed to 65, with most of the selected genes having a local FDR higher than 0.5. Note that the cell highlighted pink is marked as gene 'NA', which may correspond to a probeset which was able to bind to multiple genes, and should be considered a false positive. The three genes highlighted in green (MS4A6A, COLA31, and BAIAP3) were the only genes selected in the top 20 most promising for both cutoffs at age 70 and 65. Given this instability, we recommend regarding the list overall with low confidence, with a moderate level of confidence for the three genes which were selected for both cutoffs.
+
+```{r, eval=T, fig.align='center'}
+include_graphics("../images/final_list_updated.png")
+```
 
 This instability is a concern since it suggests that there may be a confounding factor unevenly distributed between 70+ year-olds and 65-70 year-olds. If possible, we would recommend reviewing any other information available on the patients included in the study, such as cause of death, which may provide further insight into the differences between these groups of patients.
 
-## Appendix
+# Appendix A - Analysis Details
+Below we describe our analysis in further detail. The appendix is divided into five sections: exploratory data analysis, logistic regression, linear regression with local FDR analysis, matching, and a sensitivity analysis.
 
+## Exploratory Data Analysis
 ```{r, child='brain_eda.rmd'}
 ```
 
-```{r, child = 'brain_microarray_eda.Rmd'}
+```{r, child = '../eda_heatmap_plot.Rmd', eval=T}
 ```
 
-```{r, child = 'brain_models_with_interactions-2.Rmd'}
+## Logistic Regression
+```{r, child = '../brain_age_logistic_report.Rmd'}
 ```
 
+```{r, child = 'brain_models_with_interactions-2.Rmd', eval=F}
+```
+
+## Linear Regression + Local FDR Analysis
 ```{r, child = 'brain_locfdr.rmd'}
 ```
 
-```{r, child = 'matching.Rmd'}
+## Matching
+```{r, child = '../report_matching.md', eval=T}
 ```
 
+## Sensitivity Analysis
 ```{r, child = 'sensitivity_locfdr.Rmd'}
 ```
 
+## Conclusion
+For this analysis, we considered multiple approaches to assess the most promising candidates genes which are differentially expressed with respect to age. First, we considered a penalized logistic regression as a classifier for age group based on expression values. Then, the genes which were most important for this classification would be candidates for differentially expressed genes. However, it was difficult to apply a multiple testing framework to control the false discover rate across the 22,277 genes. We then also considered an alternative approach using simpler linear models, which would allow us to directly estimate average differential expression. Using local FDR analysis, we were also able to account for multiple testing, and use the local false discovery rates to assess the uncertainty in our findings. This list became our final recommendation, however we later found that the analysis had low power and was unstable to adjusting the age cutoff. Consequently, we believe the candidates included in this list should be regarded with low confidence. However, when we followed up with our matching analysis, we found that there are clear differences between age groups between these genes. This may be due to unobserved confounding, however, and so we suggest considering possible differences due to cause of death or other confounders before conducting a follow-up experiment.
+
+```{r, child = '../appendix_per_treatment_plots.md', eval=T}
+```
